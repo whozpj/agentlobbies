@@ -1,0 +1,15 @@
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+/Docs
+# Claude session context
+CLAUDE.md
+
+# Node
+node_modules/
+dist/
+.turbo/
+*.tsbuildinfo
+.wrangler/
