@@ -13,3 +13,6 @@ dist/
 .turbo/
 *.tsbuildinfo
 .wrangler/
+
+# Wrangler local secrets
+.dev.vars

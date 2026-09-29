@@ -15,7 +15,7 @@ export const nodeCrypto: Crypto = {
   },
 };
 
-export function keypair(): { secretKey: Uint8Array; publicKey: Uint8Array } {
+export function keypair(): { secretKey: Uint8Array<ArrayBuffer>; publicKey: Uint8Array<ArrayBuffer> } {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const jwk = privateKey.export({ format: "jwk" });
   return {
