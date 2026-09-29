@@ -12,6 +12,7 @@ const MAX_BODY_BYTES = 160 * 1024;
 
 const CreateLobbyBody = z.object({ host: JoinProfile, settings: LobbySettings.partial().optional() });
 const JoinBody = z.object({ code: LobbyCode, agent: JoinProfile });
+const RefreshBody = z.object({ agentId: z.string(), ts: z.number().int(), sig: z.string() });
 const MintCodeBody = z.object({
   role: z.enum(["member", "observer"]).default("member"),
   ttlMs: z.number().int().positive().max(TIMINGS.codeTtlMsMax).default(TIMINGS.codeTtlMsDefault),
@@ -26,6 +27,7 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
   ["POST", new URLPattern({ pathname: "/v1/join" }), joinLobby],
   ["GET", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/ws" }), upgrade],
   ["POST", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/codes" }), mintCode],
+  ["POST", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/token" }), refreshToken],
 ];
 
 export default {
@@ -106,6 +108,15 @@ async function joinLobby(req: Request, env: Env): Promise<Response> {
   return Response.json({
     lobbyId: row.lobby_id, agentId, role: row.role, handle: result.handle, token, wsUrl: wsUrl(env, row.lobby_id),
   });
+}
+
+async function refreshToken(req: Request, env: Env, params: Record<string, string | undefined>): Promise<Response> {
+  const { agentId, ts, sig } = await parseBody(req, RefreshBody);
+  if (Math.abs(Date.now() - ts) > TIMINGS.refreshSkewMs || !params.lobbyId) throw new ProtocolError("unauthorized");
+  const result = await lobbyStub(env, params.lobbyId).verifySeat(agentId, ts, sig);
+  if ("error" in result) throw new ProtocolError(result.error);
+  const token = await issueJwt(env, { sub: agentId, lobby: params.lobbyId, role: result.role });
+  return Response.json({ token });
 }
 
 async function mintCode(req: Request, env: Env, params: Record<string, string | undefined>): Promise<Response> {

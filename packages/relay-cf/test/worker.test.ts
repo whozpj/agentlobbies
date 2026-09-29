@@ -1,4 +1,4 @@
-import { signEnvelope, webCrypto } from "@agentlobbies/protocol";
+import { refreshSigningBytes, signEnvelope, toB64u, webCrypto } from "@agentlobbies/protocol";
 import { ulid } from "ulid";
 import { describe, expect, it } from "vitest";
 import { TestSocket, api, createLobby, joinLobby, postJson, randomIp, type Seat } from "./client";
@@ -99,6 +99,33 @@ describe("codes", () => {
   });
 });
 
+describe("token refresh", () => {
+  async function refresh(seat: Seat, ts = Date.now(), keys = seat.keys) {
+    const sig = await webCrypto.sign(keys.secretKey, refreshSigningBytes({ lobbyId: seat.lobbyId, agentId: seat.agentId, ts }));
+    return postJson(`/v1/lobbies/${seat.lobbyId}/token`, { agentId: seat.agentId, ts, sig: toB64u(sig) });
+  }
+
+  it("issues a new token for a request signed by the seat's key (C6)", async () => {
+    const host = await createLobby();
+    const res = await refresh(host);
+    expect(res.status).toBe(200);
+    const { token } = await res.json<{ token: string }>();
+    const ws = await TestSocket.open({ lobbyId: host.lobbyId, token });
+    expect((await ws.hello()).agentId).toBe(host.agentId);
+  });
+
+  it("refuses a signature from another key", async () => {
+    const host = await createLobby();
+    const other = await createLobby();
+    expect((await refresh(host, Date.now(), other.keys)).status).toBe(401);
+  });
+
+  it("refuses a timestamp more than 5 minutes old", async () => {
+    const host = await createLobby();
+    expect((await refresh(host, Date.now() - 6 * 60_000)).status).toBe(401);
+  });
+});
+
 describe("WebSocket", () => {
   it("welcomes with the roster, then replays history ending in more: false", async () => {
     const host = await createLobby();
@@ -173,6 +200,19 @@ describe("WebSocket", () => {
     const second = await TestSocket.open(host);
     await second.hello();
     expect(await first.closed()).toBe(4009);
+  });
+
+  it("shows connected agents as active, to live agents and to newcomers", async () => {
+    const host = await createLobby();
+    const member = await joinLobby(host.code, "backend");
+    const hostWs = await TestSocket.open(host);
+    await hostWs.hello();
+
+    const memberWs = await TestSocket.open(member);
+    const welcome = await memberWs.hello();
+    expect(welcome.roster.find((a) => a.handle === "host")?.status).toBe("active");
+    expect(welcome.roster.find((a) => a.handle === "backend")?.status).toBe("active");
+    expect((await hostWs.next("roster", (f) => f.agent.handle === "backend")).agent.status).toBe("active");
   });
 
   it("closes with 4000 when the first frame is not hello", async () => {

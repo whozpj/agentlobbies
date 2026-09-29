@@ -1,5 +1,5 @@
 import {
-  ClientFrame, LIMITS, PING, PONG, TIMINGS, fromB64u, verifyEnvelope, webCrypto,
+  ClientFrame, LIMITS, PING, PONG, TIMINGS, fromB64u, refreshSigningBytes, verifyBytes, verifyEnvelope, webCrypto,
   type LobbyEvent, type LobbySettings, type Role, type ServerFrame,
 } from "@agentlobbies/protocol";
 import { DurableObject } from "cloudflare:workers";
@@ -58,6 +58,16 @@ export class LobbyDurableObject extends DurableObject<Env> {
     return result;
   }
 
+
+  async verifySeat(agentId: string, ts: number, sig: string): Promise<{ role: Role } | { error: "unauthorized" | "kicked" }> {
+    const { sql } = this.ctx.storage;
+    const agent = lobbyExists(sql) ? getAgent(sql, agentId) : undefined;
+    if (!agent) return { error: "unauthorized" };
+    if (!isActive(agent)) return { error: "kicked" };
+    const lobbyId = getMeta(sql, "lobby_id")!;
+    const ok = await verifyBytes(webCrypto, fromB64u(agent.public_key), refreshSigningBytes({ lobbyId, agentId, ts }), sig);
+    return ok ? { role: agent.role as Role } : { error: "unauthorized" };
+  }
 
   async mintCode(
     agentId: string, opts: { role: "member" | "observer"; ttlMs: number; maxUses?: number },
