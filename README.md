@@ -165,7 +165,6 @@ The relay fits in Cloudflare's free plan.
 cd packages/relay-cf
 npx wrangler login
 npx wrangler d1 create agentlobbies          # put the printed database_id in wrangler.toml
-npx wrangler r2 bucket create agentlobbies-archive
 npx wrangler d1 migrations apply agentlobbies --remote
 ```
 
