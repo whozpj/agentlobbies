@@ -73,6 +73,26 @@ describe("agentlobbies-hook", () => {
     expect(r).toEqual({ code: 0, stdout: "", stderr: "" });
   });
 
+  it("wait keeps watching a folder whose join is still pending, and wakes once it's in and messaged", async () => {
+    const lateDir = mkdtempSync(join(tmpdir(), "late-"));
+    const waiting = runHook("wait", { cwd: lateDir });
+    await new Promise((r) => setTimeout(r, 1000));
+
+    const late = await openSession({ client: "claude-code", cwd: lateDir, home });
+    const { code } = await web.call("lobby.code");
+    await late.call("lobby.join", { code, handle: "late" });
+    for (let i = 0; i < 50 && !(await api.call("lobby.players")).some((p: { handle: string }) => p.handle === "late"); i++) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    await api.call("message.send", { to: "late", type: "question", body: "welcome aboard?" });
+
+    const r = await waiting;
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("welcome aboard?");
+    late.close();
+    await web.call("inbox.pull", { limit: 25 }); // hosts see every message, including this one
+  });
+
   it("wait blocks until a message arrives, then wakes the agent with exit code 2", async () => {
     const waiting = runHook("wait", { cwd: webDir });
     await new Promise((r) => setTimeout(r, 500));
