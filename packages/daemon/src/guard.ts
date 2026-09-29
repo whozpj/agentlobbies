@@ -1,5 +1,4 @@
-// Outgoing secret scan (LLD 7.6, G34). Only well-known formats block; commit hashes, UUIDs, and
-// other long strings never do.
+// Only well-known formats: generic long strings like commit hashes must not block (G34).
 const SECRET_PATTERNS: [kind: string, pattern: RegExp][] = [
   ["private_key", /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
   ["aws_access_key", /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/],

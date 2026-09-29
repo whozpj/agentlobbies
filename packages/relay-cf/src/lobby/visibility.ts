@@ -7,12 +7,7 @@ export interface Viewer {
   observersSeeDirects: boolean;
 }
 
-// One rule, written twice: isVisible() for live fan-out and VISIBLE_SQL for replay (LLD 5.7).
-// A property test checks that they agree (I10).
-//   System and board events: everyone.
-//   Messages: never the sender. Hosts see all. Broadcasts: everyone.
-//   Directs: the addressee, and observers only if observersSeeDirects (G43).
-//   Topics: subscribers, and observers.
+// The same rule as VISIBLE_SQL below; a property test keeps the two in sync (I10).
 export function isVisible(event: LobbyEvent, viewer: Viewer): boolean {
   if (event.kind !== "message") return true;
   const { from, to } = event.envelope;

@@ -10,7 +10,6 @@ export type SendResult =
   | { held: true }
   | { error: string; retryAfterMs?: number };
 
-// How each validation failure is reported to a sender (decideHeld records the reason instead).
 const REJECT_TO_ERROR: Record<RejectReason, string> = {
   rejected_by_host: "already_rejected",
   sender_inactive: "kicked",
@@ -64,7 +63,6 @@ export function doSend(storage: DurableObjectStorage, agentId: string, e: Envelo
   const { sql } = storage;
   if (!isOpen(sql)) return { error: "lobby_closed" };
 
-  // Idempotency: a retry returns the original result (I5, G2).
   const existing = sql.exec<{ seq: number }>("SELECT seq FROM events WHERE id = ?", e.id).toArray()[0];
   if (existing) return { seq: existing.seq };
   if (count(sql, "SELECT COUNT(*) AS n FROM held WHERE envelope_id = ?", e.id)) return { held: true };

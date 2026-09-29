@@ -46,7 +46,6 @@ export class LobbyDurableObject extends DurableObject<Env> {
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair(PING, PONG));
   }
 
-  // ---------- RPC methods called by the Worker ----------
 
   async init(args: { lobbyId: string; host: NewAgent; settings: Partial<LobbySettings> }): Promise<void> {
     initLobby(this.ctx.storage, { ...args, now: Date.now() });
@@ -58,7 +57,6 @@ export class LobbyDurableObject extends DurableObject<Env> {
     return result;
   }
 
-  // ---------- WebSockets ----------
 
   async fetch(req: Request): Promise<Response> {
     const agentId = req.headers.get("X-Agent-Id") ?? "";
@@ -72,7 +70,6 @@ export class LobbyDurableObject extends DurableObject<Env> {
       return new Response(null, { status: 101, webSocket: client, headers });
     }
 
-    // One live socket per seat (I14).
     for (const old of this.ctx.getWebSockets(agentId)) old.close(4009, "replaced");
 
     this.ctx.acceptWebSocket(server, [agentId]);
@@ -117,7 +114,6 @@ export class LobbyDurableObject extends DurableObject<Env> {
     this.markOfflineIfLastSocket(ws);
   }
 
-  // ---------- Frame handlers ----------
 
   private onHello(ws: WebSocket, att: SocketAttachment, frame: Extract<ClientFrame, { t: "hello" }>): void {
     if (versionBelow(frame.clientVersion, this.env.MIN_CLIENT_VERSION)) return ws.close(4011, "upgrade required");
@@ -158,7 +154,6 @@ export class LobbyDurableObject extends DurableObject<Env> {
   }
 
   private onAck(agentId: string, seq: number): void {
-    // Clamped to head, and never moves backwards (I6).
     this.ctx.storage.sql.exec(
       "UPDATE agents SET last_acked_seq = MAX(last_acked_seq, MIN(?, ?)) WHERE agent_id = ?",
       seq, headSeq(this.ctx.storage), agentId,
@@ -169,7 +164,6 @@ export class LobbyDurableObject extends DurableObject<Env> {
     const e = frame.envelope;
     const { sql } = this.ctx.storage;
 
-    // 1. Cheap, stateless checks.
     if (e.lobbyId !== getMeta(sql, "lobby_id") || e.from !== att.agentId) return this.sendErr(ws, frame.reqId, "lobby_mismatch");
     if (roleOf(sql, att.agentId) === "observer") return this.sendErr(ws, frame.reqId, "forbidden");
     const attachmentBytes = (e.attachments ?? []).reduce((n, a) => n + new TextEncoder().encode(a.content).length, 0);
@@ -177,13 +171,11 @@ export class LobbyDurableObject extends DurableObject<Env> {
       return this.sendErr(ws, frame.reqId, "too_large");
     }
 
-    // 2. The only await: signature verification.
     const publicKey = getAgent(sql, att.agentId)?.public_key;
     if (!publicKey || !(await verifyEnvelope(webCrypto, fromB64u(publicKey), e))) {
       return this.sendErr(ws, frame.reqId, "bad_signature");
     }
 
-    // 3. Synchronous block: re-check, commit, reply, fan out.
     const result = doSend(this.ctx.storage, att.agentId, e, Date.now());
     if ("error" in result) return this.sendErr(ws, frame.reqId, result.error, undefined, result.retryAfterMs);
     this.send(ws, { t: "ok", reqId: frame.reqId, ...("held" in result ? { held: true } : { seq: result.seq }) });
@@ -191,7 +183,6 @@ export class LobbyDurableObject extends DurableObject<Env> {
   }
 
   private onPresence(ws: WebSocket, att: SocketAttachment, frame: Extract<ClientFrame, { t: "presence" }>): void {
-    // At most one presence frame per 5 s; extras are dropped silently (G31, H19).
     const now = Date.now();
     if (att.lastPresenceAt && now - att.lastPresenceAt < 5_000) return;
     att.lastPresenceAt = now;
@@ -219,7 +210,6 @@ export class LobbyDurableObject extends DurableObject<Env> {
     this.send(ws, { t: "ok", reqId: frame.reqId });
   }
 
-  // ---------- Helpers ----------
 
   /** Sends a committed event to every live socket allowed to see it. Call only after commit (I2). */
   private fanOut(event: LobbyEvent): void {

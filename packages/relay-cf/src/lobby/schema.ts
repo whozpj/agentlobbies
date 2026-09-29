@@ -1,4 +1,4 @@
-// Lobby SQLite schema (LLD 5.2 and 12.5). Migrations are append-only: never edit a released one.
+// Append-only: never edit a released migration.
 const MIGRATIONS = [
   `
   CREATE TABLE lobby_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);

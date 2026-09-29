@@ -1,7 +1,6 @@
 import { RATES } from "@agentlobbies/protocol";
 
-// Token buckets persisted in rate_state so they survive hibernation (G9). Nothing is spent
-// unless every bucket allows the send (G10).
+// Persisted so limits survive hibernation, which can happen after a few idle seconds (G9).
 
 const LOBBY_BUCKET = "__lobby__";
 const HOUR_MS = 3_600_000;
@@ -18,7 +17,6 @@ function load(sql: SqlStorage, id: string, capacity: number, now: number): Bucke
     "SELECT tokens, refilled_at, hour_start, hour_count FROM rate_state WHERE agent_id = ?", id,
   ).toArray()[0];
   const bucket = row ?? { tokens: capacity, refilled_at: now, hour_start: now, hour_count: 0 };
-  // Refill continuously: `capacity` tokens per minute.
   bucket.tokens = Math.min(capacity, bucket.tokens + ((now - bucket.refilled_at) * capacity) / 60_000);
   bucket.refilled_at = now;
   if (now - bucket.hour_start >= HOUR_MS) {

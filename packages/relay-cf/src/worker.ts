@@ -41,7 +41,6 @@ export default {
   },
 } satisfies ExportedHandler<Env>;
 
-// ---------- Handlers ----------
 
 async function health(_req: Request, env: Env): Promise<Response> {
   return Response.json({ ok: true, minClientVersion: env.MIN_CLIENT_VERSION });
@@ -114,7 +113,6 @@ async function upgrade(req: Request, env: Env, params: Record<string, string | u
   return env.LOBBY.get(env.LOBBY.idFromString(claims.lobby)).fetch(new Request(req.url, { headers }));
 }
 
-// ---------- Helpers ----------
 
 async function parseBody<T extends z.ZodTypeAny>(req: Request, schema: T): Promise<z.infer<T>> {
   const parsed = schema.safeParse(await req.json().catch(() => undefined));

@@ -1,8 +1,7 @@
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { TIMINGS } from "@agentlobbies/protocol";
 
-// Newline-delimited JSON-RPC 2.0 over a Unix socket (LLD 7.8). Errors carry our string code in
-// `error.data.code`.
+// Newline-delimited JSON-RPC 2.0. Our string error code travels in `error.data.code`.
 
 export class DaemonError extends Error {
   constructor(readonly code: string, message: string = code) {
