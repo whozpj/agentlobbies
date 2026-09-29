@@ -16,13 +16,14 @@ declare module "vitest" {
 export default async function setup(project: TestProject) {
   const relayDir = resolve(import.meta.dirname, "../../relay-cf");
   const persistTo = mkdtempSync(join(tmpdir(), "agentlobbies-relay-"));
-  execFileSync("npx", ["wrangler", "d1", "migrations", "apply", "agentlobbies", "--local", "--persist-to", persistTo], {
+  execFileSync("npx", ["wrangler", "d1", "migrations", "apply", "agentlobbies", "--local", "--env", "test", "--persist-to", persistTo], {
     cwd: relayDir, stdio: "ignore",
   });
 
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const worker = await unstable_dev(join(relayDir, "src/worker.ts"), {
     config: join(relayDir, "wrangler.toml"),
+    env: "test",
     persistTo,
     vars: {
       JWT_PRIVATE_KEY: privateKey.export({ format: "pem", type: "pkcs8" }).toString(),

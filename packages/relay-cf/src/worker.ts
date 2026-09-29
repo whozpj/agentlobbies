@@ -1,9 +1,10 @@
 import {
-  JoinProfile, LobbyCode, LobbySettings, ProtocolError, RATES, TIMINGS, generateCode, httpStatusOf, type ErrorCode,
+  JoinProfile, LobbyCode, LobbySettings, ProtocolError, RATES, TIMINGS, httpStatusOf, type ErrorCode,
 } from "@agentlobbies/protocol";
 import { ulid } from "ulid";
 import { z } from "zod";
-import { issueJwt, tokenFromSubprotocol, verifyJwt } from "./auth";
+import { issueJwt, tokenFromSubprotocol, verifyJwt, type Claims } from "./auth";
+import { insertCode } from "./codes";
 
 export { LobbyDurableObject } from "./lobby-do";
 
@@ -11,6 +12,11 @@ const MAX_BODY_BYTES = 160 * 1024;
 
 const CreateLobbyBody = z.object({ host: JoinProfile, settings: LobbySettings.partial().optional() });
 const JoinBody = z.object({ code: LobbyCode, agent: JoinProfile });
+const MintCodeBody = z.object({
+  role: z.enum(["member", "observer"]).default("member"),
+  ttlMs: z.number().int().positive().max(TIMINGS.codeTtlMsMax).default(TIMINGS.codeTtlMsDefault),
+  maxUses: z.number().int().positive().optional(),
+});
 
 type Handler = (req: Request, env: Env, params: Record<string, string | undefined>) => Promise<Response>;
 
@@ -19,6 +25,7 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
   ["POST", new URLPattern({ pathname: "/v1/lobbies" }), createLobby],
   ["POST", new URLPattern({ pathname: "/v1/join" }), joinLobby],
   ["GET", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/ws" }), upgrade],
+  ["POST", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/codes" }), mintCode],
 ];
 
 export default {
@@ -54,7 +61,8 @@ async function createLobby(req: Request, env: Env): Promise<Response> {
   const ipHash = await hmacHex(env.IP_HASH_SALT, ip);
   const recent = await env.DB.prepare("SELECT COUNT(*) AS n FROM lobbies WHERE creator_ip_hash = ? AND created_at > ?")
     .bind(ipHash, Date.now() - 3_600_000).first<{ n: number }>();
-  if ((recent?.n ?? 0) >= RATES.createLobbyPerIpPerHour) throw new ProtocolError("rate_limited");
+  const hourlyLimit = Number(env.CREATE_LOBBY_HOURLY_LIMIT ?? RATES.createLobbyPerIpPerHour);
+  if ((recent?.n ?? 0) >= hourlyLimit) throw new ProtocolError("rate_limited");
 
   const body = await parseBody(req, CreateLobbyBody);
   const id = env.LOBBY.newUniqueId();
@@ -67,7 +75,7 @@ async function createLobby(req: Request, env: Env): Promise<Response> {
     .bind(lobbyId, body.settings?.name ?? null, now, ipHash).run();
   await env.LOBBY.get(id).init({ lobbyId, host: { ...body.host, agentId }, settings: body.settings ?? {} });
 
-  const code = await insertCode(env, lobbyId, now + TIMINGS.codeTtlMsDefault);
+  const code = await insertCode(env.DB, lobbyId, { role: "member", expiresAt: now + TIMINGS.codeTtlMsDefault });
   await env.DB.prepare("UPDATE lobbies SET status = 'open' WHERE lobby_id = ?").bind(lobbyId).run();
 
   const token = await issueJwt(env, { sub: agentId, lobby: lobbyId, role: "host" });
@@ -100,6 +108,14 @@ async function joinLobby(req: Request, env: Env): Promise<Response> {
   });
 }
 
+async function mintCode(req: Request, env: Env, params: Record<string, string | undefined>): Promise<Response> {
+  const claims = await requireToken(req, env, params.lobbyId);
+  const body = await parseBody(req, MintCodeBody);
+  const result = await lobbyStub(env, claims.lobby).mintCode(claims.sub, body);
+  if ("error" in result) throw new ProtocolError(result.error);
+  return Response.json(result, { status: 201 });
+}
+
 async function upgrade(req: Request, env: Env, params: Record<string, string | undefined>): Promise<Response> {
   if (req.headers.get("Upgrade") !== "websocket") throw new ProtocolError("bad_request", "expected a websocket upgrade");
   const token = tokenFromSubprotocol(req);
@@ -110,7 +126,18 @@ async function upgrade(req: Request, env: Env, params: Record<string, string | u
   const headers = new Headers(req.headers);
   headers.set("X-Agent-Id", claims.sub);
   headers.delete("Sec-WebSocket-Protocol");
-  return env.LOBBY.get(env.LOBBY.idFromString(claims.lobby)).fetch(new Request(req.url, { headers }));
+  return lobbyStub(env, claims.lobby).fetch(new Request(req.url, { headers }));
+}
+
+async function requireToken(req: Request, env: Env, lobbyId: string | undefined): Promise<Claims> {
+  const token = req.headers.get("authorization")?.replace(/^Bearer /, "");
+  const claims = token ? await verifyJwt(env, token) : undefined;
+  if (!claims || claims.lobby !== lobbyId) throw new ProtocolError("unauthorized");
+  return claims;
+}
+
+function lobbyStub(env: Env, lobbyId: string) {
+  return env.LOBBY.get(env.LOBBY.idFromString(lobbyId));
 }
 
 
@@ -118,20 +145,6 @@ async function parseBody<T extends z.ZodTypeAny>(req: Request, schema: T): Promi
   const parsed = schema.safeParse(await req.json().catch(() => undefined));
   if (!parsed.success) throw new ProtocolError("bad_request", parsed.error.issues[0]?.message ?? "invalid body");
   return parsed.data;
-}
-
-/** Inserts a fresh member code, retrying on the rare collision with an existing code. */
-async function insertCode(env: Env, lobbyId: string, expiresAt: number): Promise<string> {
-  for (let attempt = 0; ; attempt++) {
-    const code = generateCode();
-    try {
-      await env.DB.prepare("INSERT INTO lobby_codes (code, lobby_id, role, expires_at) VALUES (?, ?, 'member', ?)")
-        .bind(code, lobbyId, expiresAt).run();
-      return code;
-    } catch (e) {
-      if (attempt >= 2) throw e;
-    }
-  }
 }
 
 async function hmacHex(secret: string, value: string): Promise<string> {

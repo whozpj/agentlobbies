@@ -40,3 +40,14 @@ simple = { limit = 10, period = 60 }
 crons = ["*/10 * * * *"]
 
 # Secrets (wrangler secret put): JWT_PRIVATE_KEY, JWT_PUBLIC_KEYS, IP_HASH_SALT
+
+# Used by the daemon, MCP, and CLI integration tests, which all connect from 127.0.0.1.
+[env.test]
+vars = { MIN_CLIENT_VERSION = "0.1.0", PUBLIC_URL = "http://localhost", JWT_KID = "k1", CREATE_LOBBY_HOURLY_LIMIT = "10000" }
+durable_objects.bindings = [{ name = "LOBBY", class_name = "LobbyDurableObject" }]
+d1_databases = [{ binding = "DB", database_name = "agentlobbies", database_id = "00000000-0000-0000-0000-000000000000", migrations_dir = "migrations/d1" }]
+r2_buckets = [{ binding = "ARCHIVE", bucket_name = "agentlobbies-archive" }]
+ratelimits = [
+  { name = "CREATE_LIMITER", namespace_id = "1001", simple = { limit = 10000, period = 60 } },
+  { name = "CODE_LIMITER", namespace_id = "1002", simple = { limit = 10000, period = 60 } },
+]

@@ -69,6 +69,36 @@ describe("REST", () => {
   });
 });
 
+describe("codes", () => {
+  const mint = (seat: Seat, body: unknown = {}) => api(`/v1/lobbies/${seat.lobbyId}/codes`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${seat.token}` },
+    body: JSON.stringify(body),
+  });
+
+  it("lets the host mint a code that others can join with", async () => {
+    const host = await createLobby();
+    const res = await mint(host, { role: "member", maxUses: 1 });
+    expect(res.status).toBe(201);
+    const { code } = await res.json<{ code: string }>();
+    expect((await joinLobby(code, "late-joiner")).lobbyId).toBe(host.lobbyId);
+  });
+
+  it("refuses code minting by a member (I9)", async () => {
+    const host = await createLobby();
+    const member = await joinLobby(host.code, "backend");
+    const res = await mint(member);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error: { code: "forbidden" } });
+  });
+
+  it("requires a token", async () => {
+    const host = await createLobby();
+    const res = await api(`/v1/lobbies/${host.lobbyId}/codes`, { method: "POST", body: "{}" });
+    expect(res.status).toBe(401);
+  });
+});
+
 describe("WebSocket", () => {
   it("welcomes with the roster, then replays history ending in more: false", async () => {
     const host = await createLobby();

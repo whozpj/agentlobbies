@@ -5,6 +5,7 @@ import {
 import { DurableObject } from "cloudflare:workers";
 import { headSeq, pageFor } from "./lobby/events";
 import { admit, getAgent, initLobby, isActive, roleOf, roster, type AdmitResult, type NewAgent } from "./lobby/membership";
+import { insertCode } from "./codes";
 import { getMeta, getSettings, isOpen } from "./lobby/meta";
 import { lobbyExists, migrate } from "./lobby/schema";
 import { doSend } from "./lobby/send";
@@ -57,6 +58,17 @@ export class LobbyDurableObject extends DurableObject<Env> {
     return result;
   }
 
+
+  async mintCode(
+    agentId: string, opts: { role: "member" | "observer"; ttlMs: number; maxUses?: number },
+  ): Promise<{ code: string; expiresAt: number } | { error: "forbidden" | "lobby_closed" }> {
+    const { sql } = this.ctx.storage;
+    if (!lobbyExists(sql) || !isOpen(sql)) return { error: "lobby_closed" };
+    if (roleOf(sql, agentId) !== "host") return { error: "forbidden" };
+    const expiresAt = Date.now() + opts.ttlMs;
+    const code = await insertCode(this.env.DB, getMeta(sql, "lobby_id")!, { role: opts.role, expiresAt, maxUses: opts.maxUses });
+    return { code, expiresAt };
+  }
 
   async fetch(req: Request): Promise<Response> {
     const agentId = req.headers.get("X-Agent-Id") ?? "";
