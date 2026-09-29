@@ -5,7 +5,7 @@ import { defineCommand, runMain } from "citty";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import pc from "picocolors";
-import { CLIENTS, detectClients, mcpCommand } from "./install";
+import { CLIENTS, detectClients, hookCommand, mcpCommand } from "./install";
 
 type Call = (method: string, params?: Record<string, unknown>) => Promise<any>;
 
@@ -160,12 +160,16 @@ const install = defineCommand({
       process.exitCode = 1;
       return;
     }
+    const hooks = hookCommand();
     for (const client of found) {
-      client.install(homedir(), mcpCommand());
-      console.log(`${pc.green("✓")} ${client.name}: added the agentlobbies tools and rules`);
+      client.install(homedir(), mcpCommand(), hooks);
+      const extra = client.id === "claude-code" && hooks ? ", and instant message delivery" : "";
+      console.log(`${pc.green("✓")} ${client.name}: added the agentlobbies tools and rules${extra}`);
     }
-    console.log(`
-Restart your agents to load the tools. Then run ${pc.bold("agentlobbies create")} in any folder.`);
+    if (!hooks) {
+      console.log(pc.dim("\nFor instant message delivery in Claude Code, install globally: npm install -g agentlobbies && agentlobbies install"));
+    }
+    console.log(`\nRestart your agents to load the tools. Then run ${pc.bold("agentlobbies create")} in any folder.`);
   },
 });
 

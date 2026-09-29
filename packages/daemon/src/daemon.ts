@@ -66,6 +66,7 @@ export class Daemon extends EventEmitter {
   private readonly connections = new Map<string, Connection>();
   private readonly waiters = new Map<string, (frame: OkOrErr) => void>();
   private readonly rejectedTokens = new Set<string>();
+  private readonly inboxWaiters = new Map<string, (result: { unread: number } | { cancelled: true }) => void>();
 
   constructor(private readonly opts: { home: string; relayUrl: string; agentJoin?: "confirm" | "allow" }) {
     super();
@@ -184,6 +185,23 @@ export class Daemon extends EventEmitter {
     },
 
     "inbox.peek": async (p) => ({ unread: this.db.unreadCount(this.seat(p).seat_id) }),
+
+    // One waiter per seat: a newer wait (the next idle period) replaces the older one.
+    "inbox.wait": async (p) => {
+      const seatId = this.seat(p).seat_id;
+      const unread = this.db.unreadCount(seatId);
+      if (unread > 0) return { unread };
+      this.inboxWaiters.get(seatId)?.({ cancelled: true });
+      return new Promise((resolve) => {
+        const finish = (result: { unread: number } | { cancelled: true }) => {
+          clearTimeout(timer);
+          if (this.inboxWaiters.get(seatId) === finish) this.inboxWaiters.delete(seatId);
+          resolve(result);
+        };
+        const timer = setTimeout(() => finish({ unread: 0 }), Number(p.timeoutMs ?? 60_000));
+        this.inboxWaiters.set(seatId, finish);
+      });
+    },
 
     "presence.set": async (p) => {
       const seat = this.seat(p);
@@ -351,7 +369,10 @@ export class Daemon extends EventEmitter {
     this.db.setCursor(seat.seat_id, last);
     conn.send({ t: "ack", seq: last });
     const unread = this.db.unreadCount(seat.seat_id);
-    if (unread > 0) this.emit("notify", { method: "inbox.new", params: { seatId: seat.seat_id, unread } });
+    if (unread > 0) {
+      this.inboxWaiters.get(seat.seat_id)?.({ unread });
+      this.emit("notify", { method: "inbox.new", params: { seatId: seat.seat_id, unread } });
+    }
   }
 
   private onReply(seat: Seat, frame: OkOrErr): void {

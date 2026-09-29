@@ -117,6 +117,25 @@ describe("daemon against the real relay", () => {
     expect(await eventually(() => web("lobby.status"), (s) => s.connection === "live")).toMatchObject({ connection: "live" });
   });
 
+  it("inbox.wait returns as soon as a message arrives, and a newer wait replaces an older one", async () => {
+    const daemon = await startDaemon();
+    const web = await session(daemon, "claude-code", mkdtempSync(join(tmpdir(), "web-")));
+    const api = await session(daemon, "codex", mkdtempSync(join(tmpdir(), "api-")));
+    const { code } = await web("lobby.create", { handle: "web" });
+    await api("lobby.join", { code, handle: "api" });
+    await eventually(() => web("lobby.players"), (p) => p.length === 2);
+
+    expect(await api("inbox.wait", { timeoutMs: 200 })).toEqual({ unread: 0 });
+
+    const older = api("inbox.wait", { timeoutMs: 10_000 });
+    const newer = api("inbox.wait", { timeoutMs: 10_000 });
+    expect(await older).toEqual({ cancelled: true });
+
+    await web("message.send", { to: "api", type: "question", body: "ping?" });
+    expect(await newer).toEqual({ unread: 1 });
+    expect(await api("inbox.wait", { timeoutMs: 10_000 })).toEqual({ unread: 1 });
+  });
+
   it("lets the host mint a new code, and refuses members", async () => {
     const daemon = await startDaemon();
     const host = await session(daemon, "cli", mkdtempSync(join(tmpdir(), "host-")));

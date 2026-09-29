@@ -11,7 +11,7 @@ export interface ClientConfig {
   name: string;
   detect(home: string): boolean;
   isInstalled(home: string): boolean;
-  install(home: string, cmd: McpCommand): void;
+  install(home: string, cmd: McpCommand, hookCommand?: string): void;
   uninstall(home: string): void;
 }
 
@@ -63,18 +63,50 @@ function tomlTable(cmd: McpCommand): string {
   return `${TOML_HEADER}\ncommand = ${JSON.stringify(cmd.command)}\nargs = [${args}]\nenv = { AGENTLOBBIES_CLIENT = "codex" }\n`;
 }
 
+type HookGroup = { matcher?: string; hooks: { type: string; command?: string; [field: string]: unknown }[] };
+type Hooks = Record<string, HookGroup[]>;
+
+const isOurs = (group: HookGroup) => group.hooks.every((h) => h.command?.includes("agentlobbies-hook"));
+
+function withoutOurHooks(hooks: Hooks): Hooks {
+  const kept: Hooks = {};
+  for (const [event, groups] of Object.entries(hooks)) {
+    const others = groups.filter((g) => !isOurs(g));
+    if (others.length > 0) kept[event] = others;
+  }
+  return kept;
+}
+
+/** Delivers messages after any tool call, on each prompt, and wakes an idle agent (asyncRewake). */
+function ourHooks(hookCommand: string): Hooks {
+  return {
+    PostToolUse: [{ hooks: [{ type: "command", command: `${hookCommand} post-tool-use` }] }],
+    UserPromptSubmit: [{ hooks: [{ type: "command", command: `${hookCommand} prompt` }] }],
+    Stop: [{ hooks: [{ type: "command", command: `${hookCommand} wait`, asyncRewake: true, timeout: 3600 }] }],
+  };
+}
+
 const claudeCode: ClientConfig = {
   id: "claude-code",
   name: "Claude Code",
   detect: (home) => existsSync(join(home, ".claude.json")) || existsSync(join(home, ".claude")),
   isInstalled: (home) => Boolean(JSON.parse(readText(join(home, ".claude.json")) || "{}").mcpServers?.agentlobbies),
-  install(home, cmd) {
+  install(home, cmd, hookCommand) {
     const path = join(home, ".claude.json");
     const config = JSON.parse(readText(path) || "{}");
     config.mcpServers = { ...config.mcpServers, agentlobbies: { type: "stdio", ...cmd, env: { AGENTLOBBIES_CLIENT: "claude-code" } } };
     writeText(path, JSON.stringify(config, null, 2));
     const rules = join(home, ".claude", "CLAUDE.md");
     writeText(rules, addRules(readText(rules)));
+
+    if (hookCommand) {
+      const settingsPath = join(home, ".claude", "settings.json");
+      const settings = JSON.parse(readText(settingsPath) || "{}");
+      const hooks = withoutOurHooks(settings.hooks ?? {});
+      for (const [event, groups] of Object.entries(ourHooks(hookCommand))) hooks[event] = [...(hooks[event] ?? []), ...groups];
+      settings.hooks = hooks;
+      writeText(settingsPath, JSON.stringify(settings, null, 2));
+    }
   },
   uninstall(home) {
     const path = join(home, ".claude.json");
@@ -85,6 +117,14 @@ const claudeCode: ClientConfig = {
     }
     const rules = join(home, ".claude", "CLAUDE.md");
     if (existsSync(rules)) writeText(rules, readText(rules).replace(RULES_PATTERN, ""));
+
+    const settingsPath = join(home, ".claude", "settings.json");
+    const settings = JSON.parse(readText(settingsPath) || "{}");
+    if (settings.hooks) {
+      settings.hooks = withoutOurHooks(settings.hooks);
+      if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
+      writeText(settingsPath, JSON.stringify(settings, null, 2));
+    }
   },
 };
 
@@ -114,8 +154,14 @@ export function detectClients(home: string): ClientConfig[] {
   return CLIENTS.filter((c) => c.detect(home));
 }
 
-/** Run through npx, the binary lives in a temporary cache, so agent configs must call npx too. */
+// Run through npx, the binaries live in a temporary cache, so agent configs must call npx too.
+const viaNpx = () => process.argv[1]?.includes(`${sep}_npx${sep}`) ?? false;
+
 export function mcpCommand(): McpCommand {
-  const viaNpx = process.argv[1]?.includes(`${sep}_npx${sep}`);
-  return viaNpx ? { command: "npx", args: ["-y", "agentlobbies", "mcp"] } : { command: "agentlobbies", args: ["mcp"] };
+  return viaNpx() ? { command: "npx", args: ["-y", "agentlobbies", "mcp"] } : { command: "agentlobbies", args: ["mcp"] };
+}
+
+/** Hooks run on every tool call, so they need the installed binary; npx would add seconds each time. */
+export function hookCommand(): string | undefined {
+  return viaNpx() ? undefined : "agentlobbies-hook";
 }

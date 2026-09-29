@@ -68,6 +68,40 @@ describe("Claude Code", () => {
   });
 });
 
+describe("Claude Code hooks", () => {
+  const settings = JSON.stringify({
+    model: "opus",
+    hooks: { PostToolUse: [{ matcher: "Write", hooks: [{ type: "command", command: "prettier --write" }] }] },
+  }, null, 2);
+
+  it("adds hooks that deliver messages during work, on prompts, and while idle, keeping existing hooks", () => {
+    const home = homeWith({ ".claude.json": "{}", ".claude/settings.json": settings });
+    claude.install(home, command, "agentlobbies-hook");
+    claude.install(home, command, "agentlobbies-hook");
+    const { model, hooks } = JSON.parse(read(home, ".claude/settings.json"));
+    expect(model).toBe("opus");
+    expect(hooks.PostToolUse).toEqual([
+      { matcher: "Write", hooks: [{ type: "command", command: "prettier --write" }] },
+      { hooks: [{ type: "command", command: "agentlobbies-hook post-tool-use" }] },
+    ]);
+    expect(hooks.UserPromptSubmit).toEqual([{ hooks: [{ type: "command", command: "agentlobbies-hook prompt" }] }]);
+    expect(hooks.Stop).toEqual([{ hooks: [{ type: "command", command: "agentlobbies-hook wait", asyncRewake: true, timeout: 3600 }] }]);
+  });
+
+  it("uninstall removes only our hooks", () => {
+    const home = homeWith({ ".claude.json": "{}", ".claude/settings.json": settings });
+    claude.install(home, command, "agentlobbies-hook");
+    claude.uninstall(home);
+    expect(JSON.parse(read(home, ".claude/settings.json"))).toEqual(JSON.parse(settings));
+  });
+
+  it("skips hooks when there is no hook command (run through npx)", () => {
+    const home = homeWith({ ".claude.json": "{}" });
+    claude.install(home, command);
+    expect(existsSync(join(home, ".claude/settings.json"))).toBe(false);
+  });
+});
+
 describe("Codex", () => {
   const existing = `# my codex config
 model = "gpt-5"

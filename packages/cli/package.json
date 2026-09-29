@@ -5,7 +5,8 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "agentlobbies": "./dist/cli.js"
+    "agentlobbies": "./dist/cli.js",
+    "agentlobbies-hook": "./dist/hook.js"
   },
   "files": [
     "dist"
