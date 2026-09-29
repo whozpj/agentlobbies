@@ -1,0 +1,37 @@
+import { execFileSync } from "node:child_process";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import type { TestProject } from "vitest/node";
+import { unstable_dev } from "wrangler";
+
+declare module "vitest" {
+  export interface ProvidedContext {
+    relayUrl: string;
+  }
+}
+
+/** Runs the real relay locally (wrangler dev) for the daemon's integration tests. */
+export default async function setup(project: TestProject) {
+  const relayDir = resolve(import.meta.dirname, "../../relay-cf");
+  const persistTo = mkdtempSync(join(tmpdir(), "agentlobbies-relay-"));
+  execFileSync("npx", ["wrangler", "d1", "migrations", "apply", "agentlobbies", "--local", "--persist-to", persistTo], {
+    cwd: relayDir, stdio: "ignore",
+  });
+
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const worker = await unstable_dev(join(relayDir, "src/worker.ts"), {
+    config: join(relayDir, "wrangler.toml"),
+    persistTo,
+    vars: {
+      JWT_PRIVATE_KEY: privateKey.export({ format: "pem", type: "pkcs8" }).toString(),
+      JWT_PUBLIC_KEYS: JSON.stringify({ k1: publicKey.export({ format: "pem", type: "spki" }).toString() }),
+      IP_HASH_SALT: randomBytes(32).toString("hex"),
+    },
+    experimental: { disableExperimentalWarning: true },
+  });
+
+  project.provide("relayUrl", `http://${worker.address}:${worker.port}`);
+  return () => worker.stop();
+}
