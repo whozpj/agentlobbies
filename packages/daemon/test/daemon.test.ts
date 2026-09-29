@@ -79,12 +79,25 @@ describe("daemon against the real relay", () => {
     await web("lobby.create", { handle: "web" });
     await expect(web("message.send", { to: "all", type: "update", body: "use AKIAIOSFODNN7EXAMPLE" }))
       .rejects.toMatchObject({ code: "secret_detected" });
+    expect(await web("message.send", { to: "all", type: "update", body: "use AKIAIOSFODNN7EXAMPLE", allowSecret: true })).toHaveProperty("id");
   });
 
   it("tells a session with no lobby to join one first", async () => {
     const daemon = await startDaemon();
     const web = await session(daemon, "claude-code", mkdtempSync(join(tmpdir(), "web-")));
     await expect(web("lobby.status")).rejects.toMatchObject({ code: "no_seat" });
+  });
+
+  it("lets the host mint a new code, and refuses members", async () => {
+    const daemon = await startDaemon();
+    const host = await session(daemon, "cli", mkdtempSync(join(tmpdir(), "host-")));
+    const member = await session(daemon, "codex", mkdtempSync(join(tmpdir(), "api-")));
+    const first = await host("lobby.create", { handle: "host" });
+    await member("lobby.join", { code: first.code, handle: "api" });
+
+    const { code } = await host("lobby.code", { maxUses: 1 });
+    expect(code).toMatch(/^[2-9]-[a-z]+-[a-z]+$/);
+    await expect(member("lobby.code")).rejects.toMatchObject({ code: "forbidden" });
   });
 
   it("holds an agent's own join until the human approves it (G42)", async () => {

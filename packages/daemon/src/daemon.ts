@@ -131,6 +131,15 @@ export class Daemon extends EventEmitter {
       return this.join(request);
     },
 
+    "lobby.code": async (p) => {
+      const seat = this.seat(p);
+      return this.relay(`/v1/lobbies/${seat.lobby_id}/codes`, {
+        role: p.role ?? "member",
+        ...(p.ttlMs ? { ttlMs: Number(p.ttlMs) } : {}),
+        ...(p.maxUses ? { maxUses: Number(p.maxUses) } : {}),
+      }, seat.jwt);
+    },
+
     "approval.list": async (p) => (p.scope === "join" ? this.db.joinRequests() : []),
 
     "approval.decide": async (p) => {
@@ -190,7 +199,7 @@ export class Daemon extends EventEmitter {
     const body = String(p.body ?? "");
     const attachments = (p.attachments ?? undefined) as Envelope["attachments"];
     const secret = findSecret([body, ...(attachments ?? []).map((a) => a.content)].join("\n"));
-    if (secret) throw new DaemonError("secret_detected", `message contains what looks like a secret (${secret})`);
+    if (secret && !p.allowSecret) throw new DaemonError("secret_detected", `message contains what looks like a secret (${secret})`);
 
     const inReplyTo = p.inReplyTo ? String(p.inReplyTo) : undefined;
     const parent = inReplyTo ? this.db.findEnvelope(seat.seat_id, inReplyTo) : undefined;
@@ -367,10 +376,14 @@ export class Daemon extends EventEmitter {
     return seat;
   }
 
-  private async relay<T>(path: string, body: unknown): Promise<T> {
+  private async relay<T>(path: string, body: unknown, token?: string): Promise<T> {
     const res = await fetch(this.opts.relayUrl + path, {
       method: "POST",
-      headers: { "content-type": "application/json", "X-Agentlobbies-Client": CLIENT_VERSION },
+      headers: {
+        "content-type": "application/json",
+        "X-Agentlobbies-Client": CLIENT_VERSION,
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
       body: JSON.stringify(body),
     });
     const json = (await res.json()) as T & { error?: { code: string; message: string } };

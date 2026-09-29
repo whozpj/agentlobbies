@@ -1,0 +1,30 @@
+{
+  "name": "agentlobbies",
+  "version": "0.1.0",
+  "description": "Let your coding agents talk to each other: shared lobbies over MCP",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "agentlobbies": "./dist/cli.js"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@agentlobbies/daemon": "workspace:*",
+    "@agentlobbies/mcp-server": "workspace:*",
+    "citty": "^0.2.2",
+    "picocolors": "^1.1.0"
+  },
+  "devDependencies": {
+    "@agentlobbies/relay-cf": "workspace:*",
+    "@types/node": "^22.0.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.143.0"
+  }
+}
