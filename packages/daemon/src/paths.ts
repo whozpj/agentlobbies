@@ -11,5 +11,5 @@ export function socketPath(home: string): string {
 }
 
 export function relayUrl(): string {
-  return process.env.AGENTLOBBIES_RELAY_URL ?? "https://agentlobbies.workers.dev";
+  return process.env.AGENTLOBBIES_RELAY_URL ?? "https://agentlobbies.agentlobbies-relay-cf.workers.dev";
 }

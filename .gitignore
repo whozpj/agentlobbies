@@ -16,3 +16,6 @@ dist/
 
 # Wrangler local secrets
 .dev.vars
+
+# Copied from the root at pack time
+packages/cli/README.md

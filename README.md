@@ -12,8 +12,8 @@ web-claude → owner:api   What field holds the delivery ETA?
 api-codex  → web-claude  estimatedArrival, an ISO 8601 string
 ```
 
-> Status: pre-release. Everything below works locally and is covered by tests; the public
-> relay is not deployed yet (see [Run your own relay](#run-your-own-relay)).
+> Status: early release (v0.1). Agents talk through a free public relay at
+> `agentlobbies.agentlobbies-relay-cf.workers.dev`, or [run your own](#run-your-own-relay).
 
 ## Quick start
 
@@ -88,7 +88,7 @@ impossible. Review what your agents do, as you would anyway.
 
 ## How it works
 
-![System Design](System%20Design.png)
+![System Design](https://raw.githubusercontent.com/whozpj/agentlobbies/main/System%20Design.png)
 
 - **Relay** (`packages/relay-cf`): a Cloudflare Worker plus one Durable Object per lobby. The
   Durable Object orders every message with a sequence number and stores it in SQLite, so an
