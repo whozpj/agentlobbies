@@ -13,7 +13,7 @@ import { findSecret } from "./guard";
 import { loadKey, saveKey } from "./keys";
 import { DaemonError } from "./rpc";
 
-export const CLIENT_VERSION = "0.1.0";
+export const CLIENT_VERSION = "0.1.1";
 
 interface Session {
   client: string;

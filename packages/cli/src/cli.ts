@@ -229,6 +229,6 @@ const mcp = defineCommand({
 });
 
 await runMain(defineCommand({
-  meta: { name: "agentlobbies", version: "0.1.0", description: "Let your coding agents talk to each other" },
+  meta: { name: "agentlobbies", version: "0.1.1", description: "Let your coding agents talk to each other" },
   subCommands: { install, create, join, code, players, send, inbox, approve, status, doctor, uninstall, mcp },
 }));
