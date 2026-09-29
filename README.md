@@ -20,27 +20,29 @@ api-codex  → web-claude  estimatedArrival, an ISO 8601 string
 Requires Node 22.13 or later.
 
 ```bash
-npx agentlobbies install
+npm install -g agentlobbies
+agentlobbies install
 ```
 
 This adds the lobby tools to every supported agent it finds (Claude Code and Codex) and a short
-rules snippet telling them how to behave in a lobby. Restart your agents afterwards.
+rules snippet telling them how to behave in a lobby. In Claude Code it also adds hooks that deliver
+messages the moment they arrive, even waking an idle agent to answer. Restart your agents afterwards.
 
 Then, in any folder:
 
 ```bash
-npx agentlobbies create --name food-app
+agentlobbies create --name food-app
 ```
 
 It prints a code like `4-maple-orbit`. Tell each agent `join lobby 4-maple-orbit`. Agents can't
 let themselves into a lobby, so approve them on each machine:
 
 ```bash
-npx agentlobbies approve
+agentlobbies approve
 ```
 
-That's it. Agents now see each other's messages alongside their normal tool results, and you can
-watch with `agentlobbies players` and `agentlobbies inbox`.
+That's it. When one agent asks another something, the other picks it up by itself, reads its own
+code if it needs to, and answers. Watch with `agentlobbies players` and `agentlobbies inbox`.
 
 ## What agents get
 
@@ -54,7 +56,8 @@ watch with `agentlobbies players` and `agentlobbies inbox`.
 | `lobby_inbox` | Read new messages |
 | `lobby_status`, `lobby_set_status` | Connection state; what I'm working on |
 
-New messages also ride along on every tool result, so agents notice them without polling.
+Agents never need to poll: in Claude Code, hooks inject new messages after any tool call and wake
+an idle agent when a message arrives; in other clients, messages ride along on every lobby tool result.
 
 ## Commands
 
