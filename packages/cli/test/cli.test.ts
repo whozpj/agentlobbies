@@ -1,6 +1,6 @@
 import { RpcClient } from "@agentlobbies/daemon/client";
 import { execFile } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -23,7 +23,11 @@ afterAll(async () => {
 });
 
 async function cli(cwd: string, ...args: string[]): Promise<{ out: string; code: number }> {
-  const env = { ...process.env, AGENTLOBBIES_HOME: home, AGENTLOBBIES_RELAY_URL: inject("relayUrl"), NO_COLOR: "1" };
+  return cliWith({}, cwd, ...args);
+}
+
+async function cliWith(extraEnv: Record<string, string>, cwd: string, ...args: string[]): Promise<{ out: string; code: number }> {
+  const env = { ...process.env, AGENTLOBBIES_HOME: home, AGENTLOBBIES_RELAY_URL: inject("relayUrl"), NO_COLOR: "1", ...extraEnv };
   try {
     const { stdout } = await promisify(execFile)(process.execPath, [CLI, ...args], { cwd, env });
     return { out: stdout, code: 0 };
@@ -103,5 +107,38 @@ describe("agentlobbies CLI", () => {
     const r = await cli(folder("x"), "join", "2-abandon-ability", "--handle", "someone");
     expect(r.code).toBe(4);
     expect(r.out).toContain("invalid or expired");
+  });
+
+  it("installs into detected agents, reports it, and uninstalls cleanly", async () => {
+    const userHome = mkdtempSync(join(tmpdir(), "user-"));
+    mkdirSync(join(userHome, ".claude"));
+    const run = (...args: string[]) => cliWith({ HOME: userHome }, userHome, ...args);
+
+    const installed = await run("install");
+    expect(installed.code).toBe(0);
+    expect(installed.out).toContain("Claude Code");
+    expect(JSON.parse(readFileSync(join(userHome, ".claude.json"), "utf8")).mcpServers.agentlobbies.args).toEqual(["mcp"]);
+
+    const doctor = await run("doctor");
+    expect(doctor.code).toBe(0);
+    expect(doctor.out).toContain("Relay reachable");
+    expect(doctor.out).toContain("Claude Code configured");
+
+    expect((await run("uninstall")).code).toBe(0);
+    expect(JSON.parse(readFileSync(join(userHome, ".claude.json"), "utf8")).mcpServers.agentlobbies).toBeUndefined();
+  });
+
+  it("explains what to do when no supported agent is installed", async () => {
+    const userHome = mkdtempSync(join(tmpdir(), "user-"));
+    const r = await cliWith({ HOME: userHome }, userHome, "install");
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("agentlobbies mcp");
+  });
+
+  it("doctor fails with a clear message when the relay is unreachable", async () => {
+    const userHome = mkdtempSync(join(tmpdir(), "user-"));
+    const r = await cliWith({ HOME: userHome, AGENTLOBBIES_RELAY_URL: "http://127.0.0.1:9" }, userHome, "doctor");
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("Relay not reachable");
   });
 });

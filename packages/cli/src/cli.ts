@@ -1,8 +1,11 @@
 #!/usr/bin/env node
-import { connectToDaemon, DaemonError } from "@agentlobbies/daemon/client";
+import { DaemonError, openSession, relayUrl } from "@agentlobbies/daemon/client";
 import { runStdioServer } from "@agentlobbies/mcp-server";
 import { defineCommand, runMain } from "citty";
+import { homedir } from "node:os";
+import { createInterface } from "node:readline/promises";
 import pc from "picocolors";
+import { CLIENTS, detectClients, mcpCommand } from "./install";
 
 type Call = (method: string, params?: Record<string, unknown>) => Promise<any>;
 
@@ -17,16 +20,15 @@ const MESSAGES: Record<string, string> = {
 
 /** Runs `fn` with a daemon session for the CLI seat of the current folder. */
 async function withLobby(fn: (call: Call) => Promise<void>): Promise<void> {
-  const daemon = await connectToDaemon();
+  const session = await openSession({ client: "cli", cwd: process.cwd() });
   try {
-    const { sessionId } = await daemon.call("session.open", { client: "cli", cwd: process.cwd() });
-    await fn((method, params = {}) => daemon.call(method, { sessionId, ...params }));
+    await fn((method, params) => session.call(method, params));
   } catch (e) {
     const code = e instanceof DaemonError ? e.code : "internal";
     console.error(pc.red(MESSAGES[code] ?? (e as Error).message));
     process.exitCode = EXIT_CODES[code] ?? 1;
   } finally {
-    daemon.close();
+    session.close();
   }
 }
 
@@ -46,7 +48,11 @@ const create = defineCommand({
   },
   run: ({ args }) => withLobby(async (call) => {
     const r = await call("lobby.create", { name: args.name, handle: args.handle });
-    console.log(`Lobby created. Share this code: ${pc.bold(r.code)} (expires ${time(r.codeExpiresAt)})`);
+    console.log(`Lobby created. Share this code: ${pc.bold(r.code)} (expires ${time(r.codeExpiresAt)})\n`);
+    console.log("Next:");
+    console.log(`  1. Tell each agent: ${pc.bold(`join lobby ${r.code}`)}`);
+    console.log(`  2. Run ${pc.bold("agentlobbies approve")} on each machine to let them in`);
+    console.log(`  3. Run ${pc.bold("agentlobbies players")} to see who is here`);
   }),
 });
 
@@ -116,21 +122,93 @@ const inbox = defineCommand({
 });
 
 const approve = defineCommand({
-  meta: { description: "List pending agent joins, or approve one by id" },
+  meta: { description: "Approve agents that asked to join a lobby" },
   args: {
-    id: { type: "positional", required: false, description: "Request id to approve" },
+    id: { type: "positional", required: false, description: "Request id to approve (default: ask about each one)" },
     reject: { type: "boolean", description: "Reject instead of approving" },
   },
   run: ({ args }) => withLobby(async (call) => {
-    if (!args.id) {
-      const pending: { id: string; client: string; handle: string; code: string }[] = await call("approval.list", { scope: "join" });
-      if (pending.length === 0) console.log(pc.dim("Nothing waiting for approval."));
-      for (const r of pending) console.log(`${r.id}  ${r.client} wants to join as ${pc.bold(r.handle)} with code ${r.code}`);
+    if (args.id) {
+      await call("approval.decide", { scope: "join", id: args.id, approve: !args.reject });
+      console.log(args.reject ? "Rejected." : "Approved.");
       return;
     }
-    await call("approval.decide", { scope: "join", id: args.id, approve: !args.reject });
-    console.log(args.reject ? "Rejected." : "Approved.");
+    const pending: { id: string; client: string; handle: string; code: string }[] = await call("approval.list", { scope: "join" });
+    if (pending.length === 0) return console.log(pc.dim("Nothing waiting for approval."));
+    if (!process.stdin.isTTY) {
+      for (const r of pending) console.log(`${r.id}  ${r.client} wants to join as ${pc.bold(r.handle)} with code ${r.code}`);
+      return console.log(pc.dim("Run `agentlobbies approve <id>` to approve one."));
+    }
+    const prompt = createInterface({ input: process.stdin, output: process.stdout });
+    for (const r of pending) {
+      const answer = await prompt.question(`Let ${r.client} join lobby ${r.code} as ${pc.bold(r.handle)}? [Y/n] `);
+      const yes = !answer.trim().toLowerCase().startsWith("n");
+      await call("approval.decide", { scope: "join", id: r.id, approve: yes });
+      console.log(yes ? pc.green("Approved.") : "Rejected.");
+    }
+    prompt.close();
   }),
+});
+
+const install = defineCommand({
+  meta: { description: "Add Agent Lobbies to your coding agents (Claude Code, Codex)" },
+  run: () => {
+    const found = detectClients(homedir());
+    if (found.length === 0) {
+      console.error(pc.red(`No supported agents found (${CLIENTS.map((c) => c.name).join(", ")}).`));
+      console.error("For other MCP clients, add a stdio server that runs: agentlobbies mcp");
+      process.exitCode = 1;
+      return;
+    }
+    for (const client of found) {
+      client.install(homedir(), mcpCommand());
+      console.log(`${pc.green("✓")} ${client.name}: added the agentlobbies tools and rules`);
+    }
+    console.log(`
+Restart your agents to load the tools. Then run ${pc.bold("agentlobbies create")} in any folder.`);
+  },
+});
+
+const uninstall = defineCommand({
+  meta: { description: "Remove Agent Lobbies from your coding agents" },
+  run: () => {
+    for (const client of CLIENTS.filter((c) => c.isInstalled(homedir()))) {
+      client.uninstall(homedir());
+      console.log(`${pc.green("✓")} ${client.name}: removed`);
+    }
+  },
+});
+
+const doctor = defineCommand({
+  meta: { description: "Check that everything is set up and reachable" },
+  run: async () => {
+    let failed = false;
+    const check = (ok: boolean, pass: string, fail: string) => {
+      console.log(ok ? `${pc.green("✓")} ${pass}` : `${pc.red("✗")} ${fail}`);
+      failed ||= !ok;
+    };
+
+    const [major = 0, minor = 0] = process.versions.node.split(".").map(Number);
+    check(major > 22 || (major === 22 && minor >= 13), `Node ${process.versions.node}`, `Node ${process.versions.node} is too old; install Node 22.13 or later`);
+
+    try {
+      const session = await openSession({ client: "cli", cwd: process.cwd() });
+      const info = await session.call("daemon.info");
+      session.close();
+      check(true, `Daemon running (pid ${info.pid})`, "");
+    } catch (e) {
+      check(false, "", `Daemon not running: ${(e as Error).message}`);
+    }
+
+    const url = relayUrl();
+    const healthy = await fetch(`${url}/v1/health`, { signal: AbortSignal.timeout(5000) }).then((r) => r.ok, () => false);
+    check(healthy, `Relay reachable at ${url}`, `Relay not reachable at ${url}; check your network or AGENTLOBBIES_RELAY_URL`);
+
+    for (const client of detectClients(homedir())) {
+      check(client.isInstalled(homedir()), `${client.name} configured`, `${client.name} not configured; run \`agentlobbies install\``);
+    }
+    process.exitCode = failed ? 1 : 0;
+  },
 });
 
 const status = defineCommand({
@@ -148,5 +226,5 @@ const mcp = defineCommand({
 
 await runMain(defineCommand({
   meta: { name: "agentlobbies", version: "0.1.0", description: "Let your coding agents talk to each other" },
-  subCommands: { create, join, code, players, send, inbox, approve, status, mcp },
+  subCommands: { install, create, join, code, players, send, inbox, approve, status, doctor, uninstall, mcp },
 }));

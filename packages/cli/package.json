@@ -7,24 +7,45 @@
   "bin": {
     "agentlobbies": "./dist/cli.js"
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsup",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@agentlobbies/daemon": "workspace:*",
-    "@agentlobbies/mcp-server": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "canonicalize": "^2.1.0",
     "citty": "^0.2.2",
-    "picocolors": "^1.1.0"
+    "picocolors": "^1.1.0",
+    "ulid": "^3.0.0",
+    "zod": "^3.25.0"
   },
   "devDependencies": {
+    "@agentlobbies/daemon": "workspace:*",
+    "@agentlobbies/mcp-server": "workspace:*",
+    "@agentlobbies/protocol": "workspace:*",
     "@agentlobbies/relay-cf": "workspace:*",
     "@types/node": "^22.0.0",
     "tsup": "^8.5.0",
     "typescript": "^5.9.0",
     "vitest": "^4.1.0",
     "wrangler": "^4.143.0"
-  }
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/whozpj/agentlobbies.git"
+  },
+  "keywords": [
+    "mcp",
+    "ai-agents",
+    "claude-code",
+    "codex",
+    "multi-agent"
+  ]
 }
