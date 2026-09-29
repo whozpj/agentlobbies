@@ -66,6 +66,7 @@ export class Daemon extends EventEmitter {
   private readonly connections = new Map<string, Connection>();
   private readonly waiters = new Map<string, (frame: OkOrErr) => void>();
   private readonly rejectedTokens = new Set<string>();
+  private readonly pendingAcks = new Map<string, { seq: number; count: number; timer: NodeJS.Timeout; conn: Connection }>();
   private readonly inboxWaiters = new Map<string, (result: { unread: number } | { cancelled: true }) => void>();
 
   constructor(private readonly opts: { home: string; relayUrl: string; agentJoin?: "confirm" | "allow" }) {
@@ -81,6 +82,7 @@ export class Daemon extends EventEmitter {
 
   async stop(): Promise<void> {
     if (!this.running) return;
+    for (const seatId of [...this.pendingAcks.keys()]) this.flushAck(seatId);
     this.running = false;
     for (const conn of this.connections.values()) conn.stop();
     this.connections.clear();
@@ -344,11 +346,13 @@ export class Daemon extends EventEmitter {
         this.db.upsertRoster(seat.seat_id, [frame.agent]);
         return;
       case "events":
-        this.store(seat, conn, frame.events);
+        this.store(seat, frame.events);
+        if (frame.events.length > 0) conn.send({ t: "ack", seq: frame.events.at(-1)!.seq });
         if (frame.more) conn.send({ t: "replay.more", afterSeq: frame.events.at(-1)?.seq ?? this.db.cursor(seat.seat_id) });
         return;
       case "event":
-        this.store(seat, conn, [frame.event]);
+        this.store(seat, [frame.event]);
+        this.ackSoon(seat.seat_id, conn, frame.event.seq);
         return;
       case "ok":
       case "err":
@@ -357,8 +361,8 @@ export class Daemon extends EventEmitter {
     }
   }
 
-  /** Store, then move the cursor, then ack: a crash can only cause a harmless redelivery (I13). */
-  private store(seat: Seat, conn: Connection, events: LobbyEvent[]): void {
+  /** Stores events and moves the cursor. Callers ack only after this, so a crash can only cause a harmless redelivery (I13). */
+  private store(seat: Seat, events: LobbyEvent[]): void {
     if (events.length === 0) return;
     this.db.ingest(seat.seat_id, events);
     for (const e of events) {
@@ -367,12 +371,28 @@ export class Daemon extends EventEmitter {
     }
     const last = events.at(-1)!.seq;
     this.db.setCursor(seat.seat_id, last);
-    conn.send({ t: "ack", seq: last });
     const unread = this.db.unreadCount(seat.seat_id);
     if (unread > 0) {
       this.inboxWaiters.get(seat.seat_id)?.({ unread });
       this.emit("notify", { method: "inbox.new", params: { seatId: seat.seat_id, unread } });
     }
+  }
+
+  /** Acks live events every 250 ms or 20 events, whichever comes first, to save relay writes (LLD 7.5). */
+  private ackSoon(seatId: string, conn: Connection, seq: number): void {
+    const pending = this.pendingAcks.get(seatId) ?? { seq, count: 0, conn, timer: setTimeout(() => this.flushAck(seatId), 250) };
+    pending.seq = seq;
+    pending.count++;
+    this.pendingAcks.set(seatId, pending);
+    if (pending.count >= 20) this.flushAck(seatId);
+  }
+
+  private flushAck(seatId: string): void {
+    const pending = this.pendingAcks.get(seatId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pendingAcks.delete(seatId);
+    pending.conn.send({ t: "ack", seq: pending.seq });
   }
 
   private onReply(seat: Seat, frame: OkOrErr): void {

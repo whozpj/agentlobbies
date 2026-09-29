@@ -1,4 +1,4 @@
-import { ServerFrame, TIMINGS, type ClientFrame } from "@agentlobbies/protocol";
+import { PING, PONG, ServerFrame, TIMINGS, type ClientFrame } from "@agentlobbies/protocol";
 
 export type ConnectionState =
   | "connecting" | "handshaking" | "replaying" | "live" | "backoff" | "stopped"
@@ -17,6 +17,7 @@ export interface ConnectionOptions {
   cursor: () => number;
   onFrame: (frame: ServerFrame) => void | Promise<void>;
   onState: (state: ConnectionState) => void;
+  heartbeatMs?: number;
 }
 
 /**
@@ -25,7 +26,9 @@ export interface ConnectionOptions {
  */
 export class Connection {
   state: ConnectionState = "stopped";
+  lastPongAt: number | undefined;
   private ws: WebSocket | undefined;
+  private heartbeat: NodeJS.Timeout | undefined;
   private attempt = 0;
   private reconnectTimer: NodeJS.Timeout | undefined;
   private queue = Promise.resolve();
@@ -48,10 +51,15 @@ export class Connection {
 
     ws.addEventListener("open", () => {
       opened = true;
+      this.startHeartbeat(ws);
       this.setState("handshaking");
       this.send({ t: "hello", v: 1, afterSeq: this.opts.cursor(), clientVersion: this.opts.clientVersion, wantsPresence: false });
     });
     ws.addEventListener("message", (m) => {
+      if (m.data === PONG) {
+        this.lastPongAt = Date.now();
+        return;
+      }
       const parsed = ServerFrame.safeParse(JSON.parse(String(m.data)));
       if (!parsed.success) return;
       // Process frames strictly in arrival order, even though handlers are async.
@@ -66,6 +74,7 @@ export class Connection {
 
   stop(): void {
     clearTimeout(this.reconnectTimer);
+    clearInterval(this.heartbeat);
     this.setState("stopped");
     this.ws?.close(1000);
     this.ws = undefined;
@@ -84,8 +93,20 @@ export class Connection {
     }
   }
 
+  /** Pings keep the relay's view of us fresh; missing pongs mean a half-open socket, so reconnect. */
+  private startHeartbeat(ws: WebSocket): void {
+    const interval = this.opts.heartbeatMs ?? TIMINGS.heartbeatIntervalMs;
+    this.lastPongAt = Date.now();
+    clearInterval(this.heartbeat);
+    this.heartbeat = setInterval(() => {
+      if (Date.now() - this.lastPongAt! > Math.max(TIMINGS.offlineAfterMs, interval * 3)) return ws.close(1000, "no pong");
+      if (ws.readyState === WebSocket.OPEN) ws.send(PING);
+    }, interval);
+  }
+
   private onClose(ws: WebSocket, code: number): void {
     if (ws !== this.ws || this.state === "stopped") return;
+    clearInterval(this.heartbeat);
     this.ws = undefined;
     const terminal = TERMINAL[code];
     if (terminal) return this.setState(terminal);

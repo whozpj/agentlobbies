@@ -59,6 +59,13 @@ describe("MCP server", () => {
     for (const t of tools) expect(t.description!.length).toBeLessThan(400);
   });
 
+  it("asks agents joining a lobby to declare what they own", async () => {
+    const web = await agent(await startDaemon(), "claude-code");
+    const join = (await web.mcp.listTools()).tools.find((t) => t.name === "lobby_join")!;
+    expect(join.description).toMatch(/owner:<area>/);
+    expect(join.inputSchema.required).toContain("owns");
+  });
+
   it("explains how to get into a lobby when the agent is not in one", async () => {
     const web = await agent(await startDaemon(), "claude-code");
     const r = await web.tool("lobby_status");
@@ -91,7 +98,7 @@ describe("MCP server", () => {
     const web = await agent(daemon, "claude-code");
     const api = await agent(daemon, "codex");
     const { code } = await web.createLobby("web");
-    await api.tool("lobby_join", { code, handle: "api" });
+    await api.tool("lobby_join", { code, handle: "api", owns: [] });
     await eventually(() => web.tool("lobby_players"), "api");
 
     await web.tool("lobby_post", { body: "x".repeat(5000) });

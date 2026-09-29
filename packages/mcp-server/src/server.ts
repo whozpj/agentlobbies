@@ -58,8 +58,14 @@ export function createServer(call: DaemonCall): McpServer {
   }
 
   server.registerTool("lobby_join", {
-    description: "Join a lobby with a code your user gave you. Pick a short handle like 'api-codex', and list the areas you own (for example 'api').",
-    inputSchema: { code: z.string(), handle: z.string(), owns: z.array(z.string()).max(16).optional() },
+    description:
+      "Join a lobby with a code your user gave you. Pick a short handle like 'api-codex'. Always list the areas you own " +
+      "(for example ['web'] or ['api', 'auth']) so peers can reach you with owner:<area>.",
+    inputSchema: {
+      code: z.string(),
+      handle: z.string(),
+      owns: z.array(z.string()).max(16).describe("Areas of the codebase you own, like ['api']. Use [] only if you own nothing."),
+    },
   }, (args) => withNewMessages(async () => {
     const r = await call("lobby.join", { ...args, source: "agent" });
     return text(`Joined lobby ${r.lobbyId.slice(0, 8)} as ${r.handle} (${r.role}). Call lobby_players to see who is here.`);

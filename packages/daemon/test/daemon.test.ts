@@ -2,7 +2,8 @@ import { mkdtempSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, inject, it } from "vitest";
+import { afterEach, describe, expect, inject, it, vi } from "vitest";
+import { Connection } from "../src/connection";
 import { Daemon } from "../src/daemon";
 
 const relayUrl = inject("relayUrl");
@@ -134,6 +135,27 @@ describe("daemon against the real relay", () => {
     await web("message.send", { to: "api", type: "question", body: "ping?" });
     expect(await newer).toEqual({ unread: 1 });
     expect(await api("inbox.wait", { timeoutMs: 10_000 })).toEqual({ unread: 1 });
+  });
+
+  it("batches acks for live events instead of acking each one", async () => {
+    const daemon = await startDaemon();
+    const web = await session(daemon, "claude-code", mkdtempSync(join(tmpdir(), "web-")));
+    const api = await session(daemon, "codex", mkdtempSync(join(tmpdir(), "api-")));
+    const { code } = await web("lobby.create", { handle: "web" });
+    await api("lobby.join", { code, handle: "api" });
+    await eventually(() => api("lobby.status"), (s) => s.connection === "live");
+    await eventually(() => web("lobby.players"), (p) => p.length === 2);
+
+    const send = vi.spyOn(Connection.prototype, "send");
+    await Promise.all(Array.from({ length: 25 }, (_, i) => api("message.send", { to: "all", type: "update", body: `update ${i}` })));
+    await eventually(() => web("inbox.peek"), (p) => p.unread === 25);
+    await new Promise((r) => setTimeout(r, 400));
+
+    const acks = send.mock.calls.map(([frame]) => frame).filter((f) => f.t === "ack") as { seq: number }[];
+    send.mockRestore();
+    expect(acks.length).toBeLessThan(10);
+    const { seq } = (await web("inbox.pull", { limit: 25 })).at(-1);
+    expect(Math.max(...acks.map((a) => a.seq))).toBe(seq);
   });
 
   it("lets the host mint a new code, and refuses members", async () => {

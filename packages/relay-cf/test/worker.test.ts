@@ -1,4 +1,6 @@
 import { refreshSigningBytes, signEnvelope, toB64u, webCrypto } from "@agentlobbies/protocol";
+import { runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { ulid } from "ulid";
 import { describe, expect, it } from "vitest";
 import { TestSocket, api, createLobby, joinLobby, postJson, randomIp, type Seat } from "./client";
@@ -213,6 +215,27 @@ describe("WebSocket", () => {
     expect(welcome.roster.find((a) => a.handle === "host")?.status).toBe("active");
     expect(welcome.roster.find((a) => a.handle === "backend")?.status).toBe("active");
     expect((await hostWs.next("roster", (f) => f.agent.handle === "backend")).agent.status).toBe("active");
+  });
+
+  it("marks an agent offline once its heartbeats stop, the next time the lobby is active", async () => {
+    const host = await createLobby();
+    const member = await joinLobby(host.code, "backend");
+    const silent = await TestSocket.open(member);
+    await silent.hello();
+    const silentSince = Date.now();
+    await new Promise((r) => setTimeout(r, 1500));
+
+    const live = await TestSocket.open(host);
+    await live.hello();
+    live.ws.send('{"t":"ping"}');
+    await new Promise((r) => setTimeout(r, 200));
+
+    const stub = env.LOBBY.get(env.LOBBY.idFromString(host.lobbyId));
+    await runInDurableObject(stub, (lobby) => lobby.closeStaleSockets(silentSince + 60_500));
+
+    expect(await silent.closed()).toBe(1001);
+    expect((await live.next("roster", (f) => f.agent.handle === "backend" && f.agent.status === "offline")).agent.status).toBe("offline");
+    expect(live.closeCode).toBeUndefined();
   });
 
   it("closes with 4000 when the first frame is not hello", async () => {

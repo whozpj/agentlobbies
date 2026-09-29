@@ -17,6 +17,7 @@ interface SocketAttachment {
   agentId: string;
   state: SocketState;
   connectedAt: number;
+  helloAt?: number;
   lastPresenceAt?: number;
 }
 
@@ -80,7 +81,23 @@ export class LobbyDurableObject extends DurableObject<Env> {
     return { code, expiresAt };
   }
 
+  /**
+   * Closes sockets whose heartbeats stopped (a laptop that slept, a dropped network), so peers see
+   * them go offline. Runs on lobby activity rather than on a timer, so idle lobbies cost nothing.
+   */
+  closeStaleSockets(now = Date.now()): void {
+    for (const ws of this.ctx.getWebSockets()) {
+      const att = ws.deserializeAttachment() as SocketAttachment | null;
+      if (!att) continue;
+      const lastSeen = this.ctx.getWebSocketAutoResponseTimestamp(ws)?.getTime() ?? att.helloAt ?? att.connectedAt;
+      if (now - lastSeen <= TIMINGS.offlineAfterMs) continue;
+      ws.close(1001, "no heartbeat");
+      this.markOfflineIfLastSocket(ws);
+    }
+  }
+
   async fetch(req: Request): Promise<Response> {
+    this.closeStaleSockets();
     const agentId = req.headers.get("X-Agent-Id") ?? "";
     const { 0: client, 1: server } = new WebSocketPair();
     const headers = { "Sec-WebSocket-Protocol": PROTOCOL };
@@ -112,6 +129,7 @@ export class LobbyDurableObject extends DurableObject<Env> {
     const parsed = ClientFrame.safeParse(json);
     if (!parsed.success) return this.sendErr(ws, undefined, "bad_request", parsed.error.issues[0]?.message ?? "invalid frame");
     const frame = parsed.data;
+    this.closeStaleSockets();
     const att = ws.deserializeAttachment() as SocketAttachment;
 
     if (att.state === "awaiting_hello" && frame.t !== "hello") return ws.close(4000, "hello first");
@@ -148,6 +166,8 @@ export class LobbyDurableObject extends DurableObject<Env> {
     const after = Math.max(frame.afterSeq, floor);
     const minRetained = Number(getMeta(sql, "min_retained_seq") ?? 1);
 
+    att.helloAt = Date.now();
+    ws.serializeAttachment(att);
     this.setStatus(att.agentId, "active");
     this.send(ws, {
       t: "welcome",
@@ -270,7 +290,12 @@ export class LobbyDurableObject extends DurableObject<Env> {
     if (!agent) return;
     const frame = JSON.stringify({ t: "roster", agent } satisfies ServerFrame);
     for (const ws of this.ctx.getWebSockets()) {
-      if ((ws.deserializeAttachment() as SocketAttachment).state === "live") ws.send(frame);
+      if ((ws.deserializeAttachment() as SocketAttachment).state !== "live") continue;
+      try {
+        ws.send(frame);
+      } catch {
+        // Socket is closing.
+      }
     }
   }
 
