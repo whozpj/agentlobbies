@@ -1,5 +1,5 @@
 import {
-  signEnvelope, generateSeatKeys, toB64u, webCrypto,
+  refreshSigningBytes, signEnvelope, generateSeatKeys, toB64u, webCrypto,
   type AgentProfile, type Envelope, type LobbyEvent, type Recipient, type ServerFrame,
 } from "@agentlobbies/protocol";
 import { createHash, randomUUID } from "node:crypto";
@@ -39,6 +39,15 @@ export interface SurfacedMessage {
   attachments?: Envelope["attachments"];
 }
 
+function expiresWithinAnHour(jwt: string): boolean {
+  try {
+    const { exp } = JSON.parse(Buffer.from(jwt.split(".")[1]!, "base64url").toString("utf8")) as { exp: number };
+    return exp * 1000 - Date.now() < 3_600_000;
+  } catch {
+    return true;
+  }
+}
+
 /** Same client in the same folder gets the same identity back (LLD 7.1). */
 export function seatKeyFor(client: string, cwd: string): string {
   const input = [client, realpathSync(cwd), process.env.AGENTLOBBIES_SEAT ?? ""].join("\0");
@@ -56,6 +65,7 @@ export class Daemon extends EventEmitter {
   private readonly sessions = new Map<string, Session>();
   private readonly connections = new Map<string, Connection>();
   private readonly waiters = new Map<string, (frame: OkOrErr) => void>();
+  private readonly rejectedTokens = new Set<string>();
 
   constructor(private readonly opts: { home: string; relayUrl: string; agentJoin?: "confirm" | "allow" }) {
     super();
@@ -263,14 +273,36 @@ export class Daemon extends EventEmitter {
   private connect(seat: Seat): void {
     const conn: Connection = new Connection({
       url: `${seat.relay_url.replace(/^http/, "ws")}/v1/lobbies/${seat.lobby_id}/ws`,
-      token: seat.jwt,
+      token: () => this.tokenFor(seat.seat_id),
+      onRejected: () => this.rejectedTokens.add(seat.seat_id),
       clientVersion: CLIENT_VERSION,
       cursor: () => this.db.cursor(seat.seat_id),
       onFrame: (frame): void => this.onFrame(seat, conn, frame),
       onState: (state): void => this.onState(seat, conn, state),
     });
     this.connections.set(seat.seat_id, conn);
-    conn.start();
+    void conn.start();
+  }
+
+  /** The seat's token, refreshed with a signature from its key when it's expiring or was refused (C6). */
+  private async tokenFor(seatId: string): Promise<string> {
+    const seat = this.db.seat(seatId);
+    if (!this.rejectedTokens.has(seatId) && !expiresWithinAnHour(seat.jwt)) return seat.jwt;
+
+    const ts = Date.now();
+    const sig = await webCrypto.sign(loadKey(this.opts.home, seatId), refreshSigningBytes({ lobbyId: seat.lobby_id, agentId: seat.agent_id, ts }));
+    try {
+      const { token } = await this.relay<{ token: string }>(`/v1/lobbies/${seat.lobby_id}/token`, { agentId: seat.agent_id, ts, sig: toB64u(sig) });
+      this.db.setJwt(seatId, token);
+      this.rejectedTokens.delete(seatId);
+      return token;
+    } catch (e) {
+      if (e instanceof DaemonError && e.code === "kicked") {
+        this.db.setSeatState(seatId, "kicked");
+        this.connections.get(seatId)?.stop();
+      }
+      throw e;
+    }
   }
 
   private onState(seat: Seat, conn: Connection, state: ConnectionState): void {
@@ -288,7 +320,7 @@ export class Daemon extends EventEmitter {
     if (!this.running) return;
     switch (frame.t) {
       case "welcome":
-        this.db.upsertRoster(seat.seat_id, frame.roster);
+        this.db.replaceRoster(seat.seat_id, frame.roster);
         return;
       case "roster":
         this.db.upsertRoster(seat.seat_id, [frame.agent]);
@@ -312,7 +344,7 @@ export class Daemon extends EventEmitter {
     if (events.length === 0) return;
     this.db.ingest(seat.seat_id, events);
     for (const e of events) {
-      if (e.kind === "system" && e.system.type === "joined") this.db.upsertRoster(seat.seat_id, [e.system.agent]);
+      if (e.kind === "system" && e.system.type === "joined") this.db.addToRoster(seat.seat_id, e.system.agent);
       if (e.kind === "system" && e.system.type === "left") this.db.removeFromRoster(seat.seat_id, e.system.agentId);
     }
     const last = events.at(-1)!.seq;

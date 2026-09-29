@@ -115,6 +115,14 @@ export class Db {
     return this.db.prepare("SELECT * FROM seats WHERE state = 'active'").all() as unknown as Seat[];
   }
 
+  seat(seatId: string): Seat {
+    return this.db.prepare("SELECT * FROM seats WHERE seat_id = ?").get(seatId) as unknown as Seat;
+  }
+
+  setJwt(seatId: string, jwt: string): void {
+    this.db.prepare("UPDATE seats SET jwt = ? WHERE seat_id = ?").run(jwt, seatId);
+  }
+
   setSeatState(seatId: string, state: string): void {
     this.db.prepare("UPDATE seats SET state = ? WHERE seat_id = ?").run(state, seatId);
   }
@@ -210,6 +218,17 @@ export class Db {
     this.db.prepare("DELETE FROM join_requests WHERE id = ?").run(id);
   }
 
+
+  replaceRoster(seatId: string, agents: AgentProfile[]): void {
+    this.db.prepare("DELETE FROM roster WHERE seat_id = ?").run(seatId);
+    this.upsertRoster(seatId, agents);
+  }
+
+  /** Adds a member only if unknown, so a replayed join never overwrites fresher presence. */
+  addToRoster(seatId: string, agent: AgentProfile): void {
+    this.db.prepare("INSERT OR IGNORE INTO roster (seat_id, agent_id, profile_json) VALUES (?, ?, ?)")
+      .run(seatId, agent.agentId, JSON.stringify(agent));
+  }
 
   upsertRoster(seatId: string, agents: AgentProfile[]): void {
     const upsert = this.db.prepare("INSERT OR REPLACE INTO roster (seat_id, agent_id, profile_json) VALUES (?, ?, ?)");

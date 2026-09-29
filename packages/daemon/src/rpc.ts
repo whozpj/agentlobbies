@@ -123,6 +123,7 @@ export class RpcClient {
   }
 
   call<T = any>(method: string, params: Record<string, unknown> = {}, timeoutMs: number = TIMINGS.rpcTimeoutMs): Promise<T> {
+    if (this.socket.destroyed) return Promise.reject(new DaemonError("daemon_unavailable", "daemon connection closed"));
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {

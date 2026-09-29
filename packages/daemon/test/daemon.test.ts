@@ -1,4 +1,5 @@
 import { mkdtempSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, inject, it } from "vitest";
@@ -86,6 +87,34 @@ describe("daemon against the real relay", () => {
     const daemon = await startDaemon();
     const web = await session(daemon, "claude-code", mkdtempSync(join(tmpdir(), "web-")));
     await expect(web("lobby.status")).rejects.toMatchObject({ code: "no_seat" });
+  });
+
+  it("shows connected peers as active, not the stale status from their joined event", async () => {
+    const daemon = await startDaemon();
+    const web = await session(daemon, "claude-code", mkdtempSync(join(tmpdir(), "web-")));
+    const api = await session(daemon, "codex", mkdtempSync(join(tmpdir(), "api-")));
+    const { code } = await web("lobby.create", { handle: "web" });
+    await api("lobby.join", { code, handle: "api" });
+    await eventually(() => api("lobby.status"), (s) => s.connection === "live");
+
+    const players = await eventually(() => api("lobby.players"), (p) => p.length === 2 && p.every((a: { status: string }) => a.status === "active"));
+    expect(players.map((a: { status: string }) => a.status)).toEqual(["active", "active"]);
+  });
+
+  it("refreshes an invalid or expired token by itself and reconnects (C6)", async () => {
+    const home = mkdtempSync(join(tmpdir(), "al-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "web-"));
+    let daemon = await startDaemon(home);
+    await (await session(daemon, "claude-code", cwd))("lobby.create", { handle: "web" });
+    await daemon.stop();
+
+    const db = new DatabaseSync(join(home, "daemon.db"));
+    db.prepare("UPDATE seats SET jwt = 'expired.token.here'").run();
+    db.close();
+
+    daemon = await startDaemon(home);
+    const web = await session(daemon, "claude-code", cwd);
+    expect(await eventually(() => web("lobby.status"), (s) => s.connection === "live")).toMatchObject({ connection: "live" });
   });
 
   it("lets the host mint a new code, and refuses members", async () => {
