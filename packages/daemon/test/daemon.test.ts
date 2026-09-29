@@ -8,8 +8,8 @@ const relayUrl = inject("relayUrl");
 const running: Daemon[] = [];
 afterEach(async () => { for (const d of running.splice(0)) await d.stop(); });
 
-async function startDaemon(home = mkdtempSync(join(tmpdir(), "al-home-"))) {
-  const daemon = new Daemon({ home, relayUrl });
+async function startDaemon(home = mkdtempSync(join(tmpdir(), "al-home-")), agentJoin: "allow" | "confirm" = "allow") {
+  const daemon = new Daemon({ home, relayUrl, agentJoin });
   await daemon.start();
   running.push(daemon);
   return daemon;
@@ -85,5 +85,38 @@ describe("daemon against the real relay", () => {
     const daemon = await startDaemon();
     const web = await session(daemon, "claude-code", mkdtempSync(join(tmpdir(), "web-")));
     await expect(web("lobby.status")).rejects.toMatchObject({ code: "no_seat" });
+  });
+
+  it("holds an agent's own join until the human approves it (G42)", async () => {
+    const daemon = await startDaemon(undefined, "confirm");
+    const web = await session(daemon, "claude-code", mkdtempSync(join(tmpdir(), "web-")));
+    const { code } = await web("lobby.create", { handle: "web" });
+    const api = await session(daemon, "codex", mkdtempSync(join(tmpdir(), "api-")));
+
+    await expect(api("lobby.join", { code, handle: "api", source: "agent" })).rejects.toMatchObject({ code: "join_pending" });
+    const [request] = await daemon.call("approval.list", { scope: "join" });
+    expect(request).toMatchObject({ client: "codex", handle: "api" });
+
+    await daemon.call("approval.decide", { scope: "join", id: request.id, approve: true });
+    expect(await api("lobby.status")).toMatchObject({ handle: "api", role: "member" });
+    expect(await daemon.call("approval.list", { scope: "join" })).toEqual([]);
+  });
+
+  it("includes the sender's client in surfaced messages and updates presence", async () => {
+    const daemon = await startDaemon();
+    const web = await session(daemon, "claude-code", mkdtempSync(join(tmpdir(), "web-")));
+    const api = await session(daemon, "codex", mkdtempSync(join(tmpdir(), "api-")));
+    const { code } = await web("lobby.create", { handle: "web" });
+    await api("lobby.join", { code, handle: "api" });
+    await eventually(() => api("lobby.status"), (s) => s.connection === "live");
+    await eventually(() => web("lobby.players"), (p) => p.length === 2);
+
+    await api("presence.set", { status: "busy", workingOn: "order status API" });
+    await web("message.send", { to: "api", type: "question", body: "ready?" });
+    const [msg] = await eventually(() => api("inbox.pull", { limit: 5 }), (m) => m.length > 0);
+    expect(msg).toMatchObject({ from: "web", fromClient: "claude-code" });
+
+    const players = await eventually(() => web("lobby.players"), (p) => p.some((a: { status: string }) => a.status === "busy"));
+    expect(players.find((a: { handle: string }) => a.handle === "api")).toMatchObject({ status: "busy", workingOn: "order status API" });
   });
 });

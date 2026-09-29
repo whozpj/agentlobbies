@@ -39,6 +39,16 @@ const SCHEMA = `
     created_at INTEGER NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS join_requests (
+    id         TEXT PRIMARY KEY,
+    seat_key   TEXT NOT NULL,
+    client     TEXT NOT NULL,
+    code       TEXT NOT NULL,
+    handle     TEXT NOT NULL,
+    owns_json  TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS roster (
     seat_id      TEXT NOT NULL,
     agent_id     TEXT NOT NULL,
@@ -67,6 +77,15 @@ function eventId(e: LobbyEvent): string {
 }
 
 /** The daemon's local SQLite: seats, inbox, outbox, and a roster cache per seat (LLD 7.2). */
+export interface JoinRequest {
+  id: string;
+  seat_key: string;
+  client: string;
+  code: string;
+  handle: string;
+  owns: string[];
+}
+
 export class Db {
   constructor(private readonly db: DatabaseSync) {
     db.exec("PRAGMA journal_mode = WAL");
@@ -77,7 +96,6 @@ export class Db {
     this.db.close();
   }
 
-  // ---------- Seats ----------
 
   insertSeat(seat: Omit<Seat, "last_acked_seq" | "state">, now: number): void {
     this.db.prepare(
@@ -114,7 +132,6 @@ export class Db {
     return (this.db.prepare("SELECT last_acked_seq FROM seats WHERE seat_id = ?").get(seatId) as { last_acked_seq: number }).last_acked_seq;
   }
 
-  // ---------- Inbox ----------
 
   /** Stores events, ignoring any already stored (replays are safe to repeat). */
   ingest(seatId: string, events: LobbyEvent[]): void {
@@ -143,14 +160,21 @@ export class Db {
     return rows.map((r) => JSON.parse(r.event_json));
   }
 
-  findEnvelope(seatId: string, envelopeId: string): Envelope | undefined {
-    const row = this.db.prepare("SELECT event_json FROM inbox WHERE seat_id = ? AND event_id = ?").get(seatId, envelopeId) as
+  findEvent(seatId: string, eventId: string): LobbyEvent | undefined {
+    const row = this.db.prepare("SELECT event_json FROM inbox WHERE seat_id = ? AND event_id = ?").get(seatId, eventId) as
       { event_json: string } | undefined;
-    const event = row && (JSON.parse(row.event_json) as LobbyEvent);
+    return row && JSON.parse(row.event_json);
+  }
+
+  findEnvelope(seatId: string, envelopeId: string): Envelope | undefined {
+    const event = this.findEvent(seatId, envelopeId);
     return event?.kind === "message" ? event.envelope : undefined;
   }
 
-  // ---------- Outbox ----------
+  markSurfaced(seatId: string, eventId: string): void {
+    this.db.prepare("UPDATE inbox SET surfaced_at = ? WHERE seat_id = ? AND event_id = ? AND surfaced_at IS NULL").run(Date.now(), seatId, eventId);
+  }
+
 
   addOutbox(reqId: string, seatId: string, frame: unknown): void {
     this.db.prepare("INSERT INTO outbox (req_id, seat_id, frame_json, state, created_at) VALUES (?, ?, ?, 'pending', ?)")
@@ -171,7 +195,21 @@ export class Db {
     this.db.prepare("UPDATE outbox SET state = ? WHERE req_id = ?").run(state, reqId);
   }
 
-  // ---------- Roster ----------
+  addJoinRequest(r: JoinRequest): void {
+    this.db.prepare("INSERT INTO join_requests (id, seat_key, client, code, handle, owns_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(r.id, r.seat_key, r.client, r.code, r.handle, JSON.stringify(r.owns), Date.now());
+  }
+
+  joinRequests(): JoinRequest[] {
+    const rows = this.db.prepare("SELECT id, seat_key, client, code, handle, owns_json FROM join_requests ORDER BY created_at").all() as
+      { id: string; seat_key: string; client: string; code: string; handle: string; owns_json: string }[];
+    return rows.map(({ owns_json, ...r }) => ({ ...r, owns: JSON.parse(owns_json) }));
+  }
+
+  deleteJoinRequest(id: string): void {
+    this.db.prepare("DELETE FROM join_requests WHERE id = ?").run(id);
+  }
+
 
   upsertRoster(seatId: string, agents: AgentProfile[]): void {
     const upsert = this.db.prepare("INSERT OR REPLACE INTO roster (seat_id, agent_id, profile_json) VALUES (?, ?, ?)");

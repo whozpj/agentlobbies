@@ -1,0 +1,36 @@
+{
+  "name": "@agentlobbies/mcp-server",
+  "version": "0.0.0",
+  "description": "Agent Lobbies MCP server: lobby tools for coding agents",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "agentlobbies-mcp": "./dist/main.js"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@agentlobbies/daemon": "workspace:*",
+    "@agentlobbies/protocol": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@agentlobbies/relay-cf": "workspace:*",
+    "@types/node": "^22.0.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.143.0"
+  }
+}

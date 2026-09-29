@@ -8,7 +8,7 @@ import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { ulid } from "ulid";
 import { Connection, type ConnectionState } from "./connection";
-import { openDb, type Db, type Seat } from "./db";
+import { openDb, type Db, type JoinRequest, type Seat } from "./db";
 import { findSecret } from "./guard";
 import { loadKey, saveKey } from "./keys";
 import { DaemonError } from "./rpc";
@@ -30,6 +30,8 @@ export interface SurfacedMessage {
   seq: number;
   from: string;
   fromAgentId: string;
+  fromClient?: string;
+  fromModel?: string;
   type: Envelope["type"];
   to: Recipient;
   body: string;
@@ -55,7 +57,7 @@ export class Daemon extends EventEmitter {
   private readonly connections = new Map<string, Connection>();
   private readonly waiters = new Map<string, (frame: OkOrErr) => void>();
 
-  constructor(private readonly opts: { home: string; relayUrl: string }) {
+  constructor(private readonly opts: { home: string; relayUrl: string; agentJoin?: "confirm" | "allow" }) {
     super();
   }
 
@@ -80,10 +82,14 @@ export class Daemon extends EventEmitter {
     return handler(params);
   }
 
-  // ---------- RPC methods (LLD 7.8) ----------
 
   private readonly methods: Record<string, (p: Params) => Promise<unknown>> = {
     "daemon.info": async () => ({ version: CLIENT_VERSION, pid: process.pid, seats: this.db.activeSeats().length }),
+
+    "daemon.shutdown": async () => {
+      setImmediate(() => this.emit("shutdown"));
+      return {};
+    },
 
     "session.open": async (p) => {
       const client = String(p.client ?? "custom");
@@ -107,21 +113,31 @@ export class Daemon extends EventEmitter {
       const res = await this.relay<{ lobbyId: string; agentId: string; token: string; code: string; codeExpiresAt: number }>(
         "/v1/lobbies", { host: profile, settings: p.name ? { name: String(p.name) } : {} },
       );
-      this.addSeat(session, { lobbyId: res.lobbyId, lobbyName: p.name ? String(p.name) : null, agentId: res.agentId,
+      this.addSeat(session.seatKey, { lobbyId: res.lobbyId, lobbyName: p.name ? String(p.name) : null, agentId: res.agentId,
                               handle: profile.handle, role: "host", token: res.token }, keys.secretKey);
       return { lobbyId: res.lobbyId, code: res.code, codeExpiresAt: res.codeExpiresAt, handle: profile.handle };
     },
 
     "lobby.join": async (p) => {
       const session = this.session(p);
-      const keys = await generateSeatKeys();
-      const profile = this.profile(session, p, toB64u(keys.publicKey));
-      const res = await this.relay<{ lobbyId: string; agentId: string; token: string; role: "member" | "observer"; handle: string }>(
-        "/v1/join", { code: String(p.code ?? ""), agent: profile },
-      );
-      this.addSeat(session, { lobbyId: res.lobbyId, lobbyName: null, agentId: res.agentId, handle: res.handle,
-                              role: res.role, token: res.token }, keys.secretKey);
-      return { lobbyId: res.lobbyId, handle: res.handle, role: res.role };
+      const request = { id: ulid(), seat_key: session.seatKey, client: session.client, code: String(p.code ?? ""),
+                        handle: String(p.handle ?? ""), owns: (p.owns as string[] | undefined) ?? [] };
+      // An agent can't let itself into a lobby; its human approves with `agentlobbies approve` (G42).
+      if (p.source === "agent" && (this.opts.agentJoin ?? "confirm") === "confirm") {
+        this.db.addJoinRequest(request);
+        this.emit("notify", { method: "approval.pending", params: { scope: "join" } });
+        throw new DaemonError("join_pending", "Ask your user to approve this join with `agentlobbies approve`.");
+      }
+      return this.join(request);
+    },
+
+    "approval.list": async (p) => (p.scope === "join" ? this.db.joinRequests() : []),
+
+    "approval.decide": async (p) => {
+      const request = this.db.joinRequests().find((r) => r.id === p.id);
+      if (!request) throw new DaemonError("not_found", "no such request");
+      this.db.deleteJoinRequest(request.id);
+      return p.approve ? this.join(request) : {};
     },
 
     "lobby.status": async (p) => {
@@ -138,14 +154,37 @@ export class Daemon extends EventEmitter {
 
     "inbox.pull": async (p) => {
       const seat = this.seat(p);
+      if (p.messageId) {
+        const envelope = this.db.findEnvelope(seat.seat_id, String(p.messageId));
+        if (!envelope) throw new DaemonError("not_found", `no message with id ${p.messageId}`);
+        this.db.markSurfaced(seat.seat_id, envelope.id);
+        return [this.surface(seat, this.db.findEvent(seat.seat_id, envelope.id)!)];
+      }
       const limit = Math.min(Number(p.limit ?? 10), 25);
       return this.db.takeUnread(seat.seat_id, limit).map((e) => this.surface(seat, e));
     },
 
     "inbox.peek": async (p) => ({ unread: this.db.unreadCount(this.seat(p).seat_id) }),
+
+    "presence.set": async (p) => {
+      const seat = this.seat(p);
+      const status = (p.status ?? "active") as "active" | "busy" | "idle";
+      this.connections.get(seat.seat_id)?.send({ t: "presence", status, workingOn: String(p.workingOn ?? "") });
+      return {};
+    },
   };
 
-  // ---------- Sending (LLD 7.7) ----------
+
+  private async join(r: Omit<JoinRequest, "id">): Promise<{ lobbyId: string; handle: string; role: string }> {
+    const keys = await generateSeatKeys();
+    const profile = { handle: r.handle, client: r.client as AgentProfile["client"], owns: r.owns, workingOn: "", publicKey: toB64u(keys.publicKey) };
+    const res = await this.relay<{ lobbyId: string; agentId: string; token: string; role: "member" | "observer"; handle: string }>(
+      "/v1/join", { code: r.code, agent: profile },
+    );
+    this.addSeat(r.seat_key, { lobbyId: res.lobbyId, lobbyName: null, agentId: res.agentId, handle: res.handle,
+                               role: res.role, token: res.token }, keys.secretKey);
+    return { lobbyId: res.lobbyId, handle: res.handle, role: res.role };
+  }
 
   private async sendMessage(seat: Seat, p: Params): Promise<{ id: string; seq?: number; held?: boolean; queued?: boolean }> {
     const body = String(p.body ?? "");
@@ -158,7 +197,8 @@ export class Daemon extends EventEmitter {
     if (inReplyTo && !parent) throw new DaemonError("bad_reply", `no message with id ${inReplyTo}`);
 
     const envelope = await signEnvelope(webCrypto, loadKey(this.opts.home, seat.seat_id), {
-      v: 1, id: ulid(), lobbyId: seat.lobby_id, from: seat.agent_id, to: this.resolveTo(seat, String(p.to ?? "all")),
+      v: 1, id: ulid(), lobbyId: seat.lobby_id, from: seat.agent_id,
+      to: p.to === undefined && parent ? { kind: "direct", agentId: parent.from } : this.resolveTo(seat, String(p.to ?? "all")),
       type: (p.type ?? "update") as Envelope["type"], threadDepth: parent ? parent.threadDepth + 1 : 0,
       body, createdAt: Date.now(),
       ...(inReplyTo ? { inReplyTo } : {}),
@@ -210,7 +250,6 @@ export class Daemon extends EventEmitter {
     return { kind: "direct", agentId: target.agentId };
   }
 
-  // ---------- Receiving (LLD 7.5) ----------
 
   private connect(seat: Seat): void {
     const conn: Connection = new Connection({
@@ -285,7 +324,6 @@ export class Daemon extends EventEmitter {
     this.waiters.delete(reqId);
   }
 
-  // ---------- Helpers ----------
 
   private surface(seat: Seat, e: LobbyEvent): SurfacedMessage {
     if (e.kind !== "message") throw new Error("only messages are surfaced");
@@ -293,19 +331,21 @@ export class Daemon extends EventEmitter {
     const sender = this.db.roster(seat.seat_id).find((a) => a.agentId === env.from);
     return {
       id: env.id, seq: e.seq, from: sender?.handle ?? env.from, fromAgentId: env.from, type: env.type, to: env.to, body: env.body,
+      ...(sender ? { fromClient: sender.client } : {}),
+      ...(sender?.model ? { fromModel: sender.model } : {}),
       ...(env.inReplyTo ? { inReplyTo: env.inReplyTo } : {}),
       ...(env.attachments ? { attachments: env.attachments } : {}),
     };
   }
 
-  private addSeat(session: Session, s: { lobbyId: string; lobbyName: string | null; agentId: string; handle: string; role: Seat["role"]; token: string }, secretKey: Uint8Array): void {
+  private addSeat(seatKey: string, s: { lobbyId: string; lobbyName: string | null; agentId: string; handle: string; role: Seat["role"]; token: string }, secretKey: Uint8Array): void {
     const seatId = ulid();
     saveKey(this.opts.home, seatId, secretKey);
     this.db.insertSeat({
-      seat_id: seatId, seat_key: session.seatKey, lobby_id: s.lobbyId, lobby_name: s.lobbyName, agent_id: s.agentId,
+      seat_id: seatId, seat_key: seatKey, lobby_id: s.lobbyId, lobby_name: s.lobbyName, agent_id: s.agentId,
       handle: s.handle, role: s.role, relay_url: this.opts.relayUrl, jwt: s.token,
     }, Date.now());
-    this.connect(this.db.activeSeat(session.seatKey)!);
+    this.connect(this.db.activeSeat(seatKey)!);
   }
 
   private profile(session: Session, p: Params, publicKey: string): Pick<AgentProfile, "handle" | "client" | "owns" | "publicKey"> & { workingOn: string } {

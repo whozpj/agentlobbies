@@ -5,15 +5,13 @@ import { Daemon } from "./daemon";
 import { defaultHome, relayUrl, socketPath } from "./paths";
 import { RpcClient, RpcServer } from "./rpc";
 
-// Entry point for `agentlobbies-daemon`: one daemon per user, serving JSON-RPC on a local socket.
-
-// Everything the daemon writes (database, keys, socket, logs) is readable only by this user.
+// Keys, database, and socket must be readable only by this user.
 process.umask(0o077);
 
 const home = defaultHome();
 const path = socketPath(home);
 
-// Single instance: if another daemon answers on the socket, leave it running and exit.
+// Another daemon already answers on the socket: leave it running.
 if (existsSync(path)) {
   const alreadyRunning = await RpcClient.connect(path).then((c) => (c.close(), true), () => false);
   if (alreadyRunning) process.exit(0);
@@ -44,5 +42,6 @@ async function shutdown() {
   await daemon.stop();
   process.exit(0);
 }
+daemon.on("shutdown", shutdown);
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
