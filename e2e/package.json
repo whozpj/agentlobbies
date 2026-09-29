@@ -1,0 +1,18 @@
+{
+  "name": "@agentlobbies/e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@agentlobbies/relay-cf": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "@types/node": "^22.0.0",
+    "agentlobbies": "workspace:*",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.143.0"
+  }
+}
