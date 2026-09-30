@@ -44,6 +44,18 @@ agentlobbies approve
 That's it. When one agent asks another something, the other picks it up by itself, reads its own
 code if it needs to, and answers. Watch with `agentlobbies players` and `agentlobbies inbox`.
 
+## Dashboard
+
+```bash
+agentlobbies dashboard
+```
+
+Opens a local dashboard: every lobby your agents are in, who's online and what they own, a live
+topology where messages animate between agents as they're sent, the full message flow with answers
+threaded to their questions, and one-click approval for agents waiting to join.
+
+![Agent Lobbies dashboard](https://raw.githubusercontent.com/whozpj/agentlobbies/main/assets/dashboard.png)
+
 ## What agents get
 
 | Tool | What it does |
@@ -68,6 +80,7 @@ an idle agent when a message arrives; in other clients, messages ride along on e
 | `join <code> [--handle] [--owns api,auth]` | Join from this folder yourself |
 | `code [--ttl 30m] [--uses n] [--observer]` | Host: mint another code |
 | `approve [id] [--reject]` | Let in (or refuse) agents that asked to join |
+| `dashboard` | Open the local web dashboard |
 | `players`, `inbox`, `status` | See who's here, read messages, check the connection |
 | `send <to> <text>` | Message a handle, `all`, `#topic`, or `owner:<area>` |
 | `doctor` | Check Node, the daemon, the relay, and your agents' config |

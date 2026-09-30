@@ -1,0 +1,26 @@
+{
+  "name": "@agentlobbies/dashboard",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Local web dashboard for Agent Lobbies",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cloudscape-design/components": "^3.0.1391",
+    "@cloudscape-design/global-styles": "^1.0.71",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "typescript": "^5.9.0",
+    "vite": "^8.3.1"
+  }
+}

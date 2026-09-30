@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { existsSync, unlinkSync } from "node:fs";
 import type { Socket } from "node:net";
+import { fileURLToPath } from "node:url";
 import { Daemon } from "./daemon";
 import { defaultHome, relayUrl, socketPath } from "./paths";
 import { RpcClient, RpcServer } from "./rpc";
@@ -18,7 +19,8 @@ if (existsSync(path)) {
   unlinkSync(path); // stale socket from a crashed daemon
 }
 
-const daemon = new Daemon({ home, relayUrl: relayUrl() });
+const dashboardDir = fileURLToPath(new URL("./dashboard/", import.meta.url));
+const daemon = new Daemon({ home, relayUrl: relayUrl(), dashboardDir });
 await daemon.start();
 
 // Sessions belong to the connection that opened them, so a crashed MCP server frees its seat (K3).

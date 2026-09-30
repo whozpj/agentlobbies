@@ -2,6 +2,7 @@
 import { DaemonError, openSession, relayUrl } from "@agentlobbies/daemon/client";
 import { runStdioServer } from "@agentlobbies/mcp-server";
 import { defineCommand, runMain } from "citty";
+import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import pc from "picocolors";
@@ -223,6 +224,18 @@ const status = defineCommand({
   }),
 });
 
+const dashboard = defineCommand({
+  meta: { description: "Open the local web dashboard: agents, live message flow, and approvals" },
+  args: { open: { type: "boolean", default: true, description: "Open it in your browser" } },
+  run: ({ args }) => withLobby(async (call) => {
+    const { url } = await call("dashboard.start");
+    console.log(`Dashboard: ${pc.bold(url)}`);
+    if (!args.open) return;
+    const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
+    spawn(opener, [url], { detached: true, stdio: "ignore" }).unref();
+  }),
+});
+
 const mcp = defineCommand({
   meta: { description: "Run the MCP server over stdio (used by agent configs)" },
   run: () => runStdioServer(),
@@ -230,5 +243,5 @@ const mcp = defineCommand({
 
 await runMain(defineCommand({
   meta: { name: "agentlobbies", version: "0.1.1", description: "Let your coding agents talk to each other" },
-  subCommands: { install, create, join, code, players, send, inbox, approve, status, doctor, uninstall, mcp },
+  subCommands: { install, create, join, code, players, send, inbox, approve, dashboard, status, doctor, uninstall, mcp },
 }));

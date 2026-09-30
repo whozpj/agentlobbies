@@ -12,7 +12,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && rm -rf dist/dashboard && cp -R ../dashboard/dist dist/dashboard",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "prepack": "cp ../../README.md README.md"
@@ -34,7 +34,8 @@
     "tsup": "^8.5.0",
     "typescript": "^5.9.0",
     "vitest": "^4.1.0",
-    "wrangler": "^4.143.0"
+    "wrangler": "^4.143.0",
+    "@agentlobbies/dashboard": "workspace:*"
   },
   "engines": {
     "node": ">=22.13"

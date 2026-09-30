@@ -8,6 +8,7 @@ import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { ulid } from "ulid";
 import { Connection, type ConnectionState } from "./connection";
+import { startDashboard, type Dashboard } from "./dashboard";
 import { openDb, type Db, type JoinRequest, type Seat } from "./db";
 import { findSecret } from "./guard";
 import { loadKey, saveKey } from "./keys";
@@ -69,7 +70,9 @@ export class Daemon extends EventEmitter {
   private readonly pendingAcks = new Map<string, { seq: number; count: number; timer: NodeJS.Timeout; conn: Connection }>();
   private readonly inboxWaiters = new Map<string, (result: { unread: number } | { cancelled: true }) => void>();
 
-  constructor(private readonly opts: { home: string; relayUrl: string; agentJoin?: "confirm" | "allow" }) {
+  private dashboard: Dashboard | undefined;
+
+  constructor(private readonly opts: { home: string; relayUrl: string; agentJoin?: "confirm" | "allow"; dashboardDir?: string }) {
     super();
   }
 
@@ -83,6 +86,7 @@ export class Daemon extends EventEmitter {
   async stop(): Promise<void> {
     if (!this.running) return;
     for (const seatId of [...this.pendingAcks.keys()]) this.flushAck(seatId);
+    await this.dashboard?.close();
     this.running = false;
     for (const conn of this.connections.values()) conn.stop();
     this.connections.clear();
@@ -138,6 +142,7 @@ export class Daemon extends EventEmitter {
       // An agent can't let itself into a lobby; its human approves with `agentlobbies approve` (G42).
       if (p.source === "agent" && (this.opts.agentJoin ?? "confirm") === "confirm") {
         this.db.addJoinRequest(request);
+        this.emit("activity", { type: "approvals" });
         this.emit("notify", { method: "approval.pending", params: { scope: "join" } });
         throw new DaemonError("join_pending", "Ask your user to approve this join with `agentlobbies approve`.");
       }
@@ -159,6 +164,7 @@ export class Daemon extends EventEmitter {
       const request = this.db.joinRequests().find((r) => r.id === p.id);
       if (!request) throw new DaemonError("not_found", "no such request");
       this.db.deleteJoinRequest(request.id);
+      this.emit("activity", { type: "approvals" });
       return p.approve ? this.join(request) : {};
     },
 
@@ -187,6 +193,33 @@ export class Daemon extends EventEmitter {
     },
 
     "inbox.peek": async (p) => ({ unread: this.db.unreadCount(this.seat(p).seat_id) }),
+
+    "dashboard.start": async () => {
+      this.dashboard ??= await startDashboard(this, this.opts.dashboardDir);
+      return { url: this.dashboard.url };
+    },
+
+    "dashboard.lobbies": async () => {
+      const byLobby = Map.groupBy(this.db.activeSeats(), (s) => s.lobby_id);
+      return [...byLobby].map(([lobbyId, seats]) => {
+        const view = this.viewSeat(seats);
+        return {
+          lobbyId,
+          name: seats.find((s) => s.lobby_name)?.lobby_name ?? null,
+          local: seats.map((s) => ({ handle: s.handle, role: s.role })),
+          connection: this.connections.get(view.seat_id)?.state ?? "stopped",
+          roster: this.db.roster(view.seat_id),
+        };
+      });
+    },
+
+    "dashboard.messages": async (p) => {
+      const seats = this.db.activeSeats().filter((s) => s.lobby_id === p.lobbyId);
+      if (seats.length === 0) return [];
+      const view = this.viewSeat(seats);
+      const events = this.db.messagesForSeats(seats.map((s) => s.seat_id), Number(p.limit ?? 200));
+      return events.map((e) => this.dashboardMessage(view, e));
+    },
 
     // One waiter per seat: a newer wait (the next idle period) replaces the older one.
     "inbox.wait": async (p) => {
@@ -334,6 +367,7 @@ export class Daemon extends EventEmitter {
       this.db.setSeatState(seat.seat_id, state);
     }
     this.emit("notify", { method: "seat.state", params: { seatId: seat.seat_id, state } });
+    this.emit("activity", { type: "connection", lobbyId: seat.lobby_id, state });
   }
 
   private onFrame(seat: Seat, conn: Connection, frame: ServerFrame): void {
@@ -341,9 +375,11 @@ export class Daemon extends EventEmitter {
     switch (frame.t) {
       case "welcome":
         this.db.replaceRoster(seat.seat_id, frame.roster);
+        this.emit("activity", { type: "roster", lobbyId: seat.lobby_id });
         return;
       case "roster":
         this.db.upsertRoster(seat.seat_id, [frame.agent]);
+        this.emit("activity", { type: "roster", lobbyId: seat.lobby_id });
         return;
       case "events":
         this.store(seat, frame.events);
@@ -371,6 +407,8 @@ export class Daemon extends EventEmitter {
     }
     const last = events.at(-1)!.seq;
     this.db.setCursor(seat.seat_id, last);
+    for (const e of events) this.emitMessage(seat, e);
+    if (events.some((e) => e.kind === "system")) this.emit("activity", { type: "roster", lobbyId: seat.lobby_id });
     const unread = this.db.unreadCount(seat.seat_id);
     if (unread > 0) {
       this.inboxWaiters.get(seat.seat_id)?.({ unread });
@@ -400,12 +438,37 @@ export class Daemon extends EventEmitter {
     this.db.finishOutbox(reqId, frame.t === "ok" ? "done" : "failed");
     if (frame.t === "ok" && frame.seq) {
       const sent = this.db.outboxFrame(reqId) as { envelope: Envelope } | undefined;
-      if (sent) this.db.recordOwn(seat.seat_id, { kind: "message", seq: frame.seq, committedAt: Date.now(), envelope: sent.envelope });
+      if (sent) {
+        const own: LobbyEvent = { kind: "message", seq: frame.seq, committedAt: Date.now(), envelope: sent.envelope };
+        this.db.recordOwn(seat.seat_id, own);
+        this.emitMessage(seat, own);
+      }
     }
     this.waiters.get(reqId)?.(frame);
     this.waiters.delete(reqId);
   }
 
+
+  /** Hosts see every message, so a local host seat gives the fullest view of a lobby. */
+  private viewSeat(seats: Seat[]): Seat {
+    return seats.find((s) => s.role === "host") ?? seats[0]!;
+  }
+
+  private dashboardMessage(view: Seat, e: LobbyEvent) {
+    if (e.kind !== "message") throw new Error("only messages");
+    const { envelope: env } = e;
+    const handleOf = (agentId: string) => this.db.roster(view.seat_id).find((a) => a.agentId === agentId)?.handle ?? agentId;
+    const to = env.to.kind === "broadcast" ? "all" : env.to.kind === "topic" ? `#${env.to.topic}` : handleOf(env.to.agentId);
+    return {
+      id: env.id, seq: e.seq, from: handleOf(env.from), to, type: env.type, body: env.body,
+      inReplyTo: env.inReplyTo ?? null, committedAt: e.committedAt,
+    };
+  }
+
+  private emitMessage(seat: Seat, e: LobbyEvent): void {
+    if (e.kind !== "message") return;
+    this.emit("activity", { type: "message", lobbyId: seat.lobby_id, message: this.dashboardMessage(seat, e) });
+  }
 
   private surface(seat: Seat, e: LobbyEvent): SurfacedMessage {
     if (e.kind !== "message") throw new Error("only messages are surfaced");

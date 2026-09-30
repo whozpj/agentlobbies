@@ -168,6 +168,16 @@ export class Db {
     return rows.map((r) => JSON.parse(r.event_json));
   }
 
+  /** Messages seen by any of these seats (including their own), each once, oldest first. */
+  messagesForSeats(seatIds: string[], limit: number): LobbyEvent[] {
+    if (seatIds.length === 0) return [];
+    const rows = this.db.prepare(
+      `SELECT event_json FROM inbox WHERE kind = 'message' AND seat_id IN (${seatIds.map(() => "?").join(", ")})
+       GROUP BY event_id ORDER BY MIN(seq) DESC LIMIT ?`,
+    ).all(...seatIds, limit) as { event_json: string }[];
+    return rows.map((r) => JSON.parse(r.event_json) as LobbyEvent).reverse();
+  }
+
   findEvent(seatId: string, eventId: string): LobbyEvent | undefined {
     const row = this.db.prepare("SELECT event_json FROM inbox WHERE seat_id = ? AND event_id = ?").get(seatId, eventId) as
       { event_json: string } | undefined;
