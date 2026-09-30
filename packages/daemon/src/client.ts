@@ -3,24 +3,43 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { defaultHome, socketPath } from "./paths";
 import { DaemonError, RpcClient } from "./rpc";
+import { CLIENT_VERSION } from "./version";
 
 export { defaultHome, relayUrl, socketPath } from "./paths";
 export { DaemonError, RpcClient } from "./rpc";
 export type { SurfacedMessage } from "./daemon";
+export { CLIENT_VERSION } from "./version";
 
-/** Connects to this user's daemon, starting it in the background if it isn't running (LLD 7.9). */
+function isOlder(version: string, than: string): boolean {
+  const a = version.split(".").map(Number);
+  const b = than.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) < (b[i] ?? 0);
+  return false;
+}
+
+/**
+ * Connects to this user's daemon, starting it in the background if it isn't running. A daemon
+ * older than this client (left over from before an upgrade) is shut down and replaced (LLD 7.9).
+ */
 export async function connectToDaemon(home = defaultHome()): Promise<RpcClient> {
   const path = socketPath(home);
-  try {
-    return await RpcClient.connect(path);
-  } catch {
-    const main = fileURLToPath(new URL("./main.js", import.meta.url));
-    spawn(process.execPath, ["--disable-warning=ExperimentalWarning", main], {
-      detached: true,
-      stdio: "ignore",
-      env: { ...process.env, AGENTLOBBIES_HOME: home },
-    }).unref();
+  const existing = await RpcClient.connect(path).catch(() => undefined);
+  if (existing) {
+    const info = await existing.call<{ version: string }>("daemon.info").catch(() => undefined);
+    if (!info || !isOlder(info.version, CLIENT_VERSION)) return existing;
+    await existing.call("daemon.shutdown").catch(() => {});
+    existing.close();
+    for (let i = 0; i < 30 && (await RpcClient.connect(path).then((c) => (c.close(), true), () => false)); i++) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
   }
+
+  const main = fileURLToPath(new URL("./main.js", import.meta.url));
+  spawn(process.execPath, ["--disable-warning=ExperimentalWarning", main], {
+    detached: true,
+    stdio: "ignore",
+    env: { ...process.env, AGENTLOBBIES_HOME: home },
+  }).unref();
   for (let i = 0; i < 30; i++) {
     await new Promise((r) => setTimeout(r, 100));
     try {

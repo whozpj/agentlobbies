@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { DaemonError, openSession, relayUrl } from "@agentlobbies/daemon/client";
+import { CLIENT_VERSION, DaemonError, openSession, relayUrl } from "@agentlobbies/daemon/client";
 import { runStdioServer } from "@agentlobbies/mcp-server";
 import { defineCommand, runMain } from "citty";
 import { spawn } from "node:child_process";
@@ -242,6 +242,6 @@ const mcp = defineCommand({
 });
 
 await runMain(defineCommand({
-  meta: { name: "agentlobbies", version: "0.1.1", description: "Let your coding agents talk to each other" },
+  meta: { name: "agentlobbies", version: CLIENT_VERSION, description: "Let your coding agents talk to each other" },
   subCommands: { install, create, join, code, players, send, inbox, approve, dashboard, status, doctor, uninstall, mcp },
 }));

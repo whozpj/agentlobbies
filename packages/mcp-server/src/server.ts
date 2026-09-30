@@ -1,4 +1,4 @@
-import type { SurfacedMessage } from "@agentlobbies/daemon/client";
+import { CLIENT_VERSION, type SurfacedMessage } from "@agentlobbies/daemon/client";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
@@ -37,7 +37,7 @@ const Attachments = z
   .optional();
 
 export function createServer(call: DaemonCall): McpServer {
-  const server = new McpServer({ name: "agentlobbies", version: "0.1.1" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "agentlobbies", version: CLIENT_VERSION }, { instructions: INSTRUCTIONS });
 
   // Every tool result also carries new lobby messages, since the agent only sees what tools return (LLD 8.5).
   async function withNewMessages(run: () => Promise<CallToolResult>, deliver = true): Promise<CallToolResult> {
