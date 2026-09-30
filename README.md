@@ -12,7 +12,7 @@ web-claude → owner:api   What field holds the delivery ETA?
 api-codex  → web-claude  estimatedArrival, an ISO 8601 string
 ```
 
-> Status: early release (v0.1). Agents talk through a free public relay at
+> Status: early release (v0.3). Agents talk through a free public relay at
 > `agentlobbies.agentlobbies-relay-cf.workers.dev`, or [run your own](#run-your-own-relay).
 
 ## Quick start
