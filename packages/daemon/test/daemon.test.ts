@@ -5,109 +5,98 @@ import { join } from "node:path";
 import { afterEach, describe, expect, inject, it, vi } from "vitest";
 import { Connection } from "../src/connection";
 import { Daemon } from "../src/daemon";
+import { add, agentSession, eventually } from "./lobby-helpers";
 
 const relayUrl = inject("relayUrl");
 const running: Daemon[] = [];
 afterEach(async () => { for (const d of running.splice(0)) await d.stop(); });
 
-async function startDaemon(home = mkdtempSync(join(tmpdir(), "al-home-")), agentJoin: "allow" | "confirm" = "allow") {
-  const daemon = new Daemon({ home, relayUrl, agentJoin });
+async function startDaemon(home = mkdtempSync(join(tmpdir(), "al-home-")), login = "tester") {
+  const daemon = new Daemon({ home, relayUrl });
   await daemon.start();
   running.push(daemon);
-  await daemon.call("account.login", { githubToken: "gho_fake_tester" });
+  await daemon.call("account.login", { githubToken: `gho_fake_${login}` });
   return daemon;
 }
 
-/** Opens a session the way an MCP server would: one client in one working directory. */
-async function session(daemon: Daemon, client: string, cwd: string) {
-  const { sessionId } = await daemon.call("session.open", { client, cwd });
-  return (method: string, params: Record<string, unknown> = {}) => daemon.call(method, { sessionId, ...params });
-}
-
-async function eventually<T>(fn: () => Promise<T>, ok: (v: T) => boolean): Promise<T> {
-  for (const deadline = Date.now() + 10_000; ; ) {
-    const v = await fn();
-    if (ok(v) || Date.now() > deadline) return v;
-    await new Promise((r) => setTimeout(r, 100));
-  }
+/** One daemon, a lobby, and two of its agents already added. */
+async function lobbyWithTwoAgents() {
+  const daemon = await startDaemon();
+  const web = await agentSession(daemon, "claude-code", "web");
+  const api = await agentSession(daemon, "codex", "api");
+  const { lobbyId } = await daemon.call("lobby.create", { name: "food-app" });
+  await add(daemon, lobbyId, web, "web-claude", ["web"]);
+  await add(daemon, lobbyId, api, "api-codex", ["api"]);
+  await eventually(() => web.call("lobby.players"), (p) => p.length === 3);
+  await eventually(() => api.call("lobby.status"), (s) => s.connection === "live");
+  return { daemon, lobbyId, web, api };
 }
 
 describe("daemon against the real relay", () => {
   it("lets one agent ask another a question and read the answer (E1 shape)", async () => {
-    const daemon = await startDaemon();
-    const web = await session(daemon, "claude-code", mkdtempSync(join(tmpdir(), "web-")));
-    const api = await session(daemon, "codex", mkdtempSync(join(tmpdir(), "api-")));
-
-    const { code } = await web("lobby.create", { handle: "web-claude", name: "food-app" });
-    await api("lobby.join", { code, handle: "api-codex", owns: ["api"] });
-    await eventually(() => web("lobby.players"), (players) => players.length === 2);
-
-    const sent = await web("message.send", { to: "owner:api", type: "question", body: "What field holds the ETA?" });
+    const { web, api } = await lobbyWithTwoAgents();
+    const sent = await web.call("message.send", { to: "owner:api", type: "question", body: "What field holds the ETA?" });
     expect(sent.seq).toBeGreaterThan(0);
 
-    const [question] = await eventually(() => api("inbox.pull", { limit: 5 }), (m) => m.length > 0);
+    const [question] = await eventually(() => api.call("inbox.pull", { limit: 5 }), (m) => m.length > 0);
     expect(question).toMatchObject({ from: "web-claude", type: "question", body: "What field holds the ETA?" });
 
-    await api("message.send", { to: "web-claude", type: "answer", inReplyTo: question.id, body: "estimatedArrival, ISO 8601" });
-    const [answer] = await eventually(() => web("inbox.pull", { limit: 5 }), (m) => m.length > 0);
+    await api.call("message.send", { to: "web-claude", type: "answer", inReplyTo: question.id, body: "estimatedArrival, ISO 8601" });
+    const [answer] = await eventually(() => web.call("inbox.pull", { limit: 5 }), (m) => m.length > 0);
     expect(answer).toMatchObject({ from: "api-codex", type: "answer", inReplyTo: question.id });
   });
 
   it("catches up on messages sent while the daemon was stopped, in order, once (E5 shape)", async () => {
-    const homeA = mkdtempSync(join(tmpdir(), "al-home-"));
-    const a = await startDaemon();
-    let b = await startDaemon(homeA);
-    const apiCwd = mkdtempSync(join(tmpdir(), "api-"));
-    const web = await session(a, "claude-code", mkdtempSync(join(tmpdir(), "web-")));
-    let api = await session(b, "codex", apiCwd);
+    const laptop = await startDaemon(undefined, "alice");
+    const serverHome = mkdtempSync(join(tmpdir(), "al-home-"));
+    let server = await startDaemon(serverHome, "bob");
+    const web = await agentSession(laptop, "claude-code", "web");
+    const apiCwd = (await agentSession(server, "codex", "api")).cwd;
+    let api = await agentSession(server, "codex", "api", apiCwd);
 
-    const { code } = await web("lobby.create", { handle: "web" });
-    await api("lobby.join", { code, handle: "api" });
-    await eventually(() => web("lobby.players"), (players) => players.length === 2);
-    await eventually(() => api("lobby.status"), (s) => s.connection === "live");
-    await b.stop();
+    const { lobbyId } = await laptop.call("lobby.create", { name: "food-app" });
+    await add(laptop, lobbyId, web, "web");
+    const { url } = await laptop.call("invite.create", { lobbyId });
+    await server.call("invite.accept", { invite: url });
+    await add(server, lobbyId, api, "api");
+    await eventually(() => web.call("lobby.players"), (p) => p.some((a: { handle: string }) => a.handle === "api"));
+    await eventually(() => api.call("lobby.status"), (s) => s.connection === "live");
+    await server.stop();
 
-    for (const n of [1, 2, 3]) await web("message.send", { to: "api", type: "question", body: `question ${n}` });
+    for (const n of [1, 2, 3]) await web.call("message.send", { to: "api", type: "question", body: `question ${n}` });
 
-    b = await startDaemon(homeA);
-    api = await session(b, "codex", apiCwd);
-    const msgs = await eventually(() => api("inbox.peek"), (p) => p.unread >= 3);
-    expect(msgs.unread).toBe(3);
-    expect((await api("inbox.pull", { limit: 10 })).map((m: { body: string }) => m.body)).toEqual(["question 1", "question 2", "question 3"]);
+    server = await startDaemon(serverHome, "bob");
+    api = await agentSession(server, "codex", "api", apiCwd);
+    const peek = await eventually(() => api.call("inbox.peek"), (p) => p.unread >= 3);
+    expect(peek.unread).toBe(3);
+    expect((await api.call("inbox.pull", { limit: 10 })).map((m: { body: string }) => m.body)).toEqual(["question 1", "question 2", "question 3"]);
   });
 
-  it("refuses to send a message containing a secret", async () => {
-    const daemon = await startDaemon();
-    const web = await session(daemon, "claude-code", mkdtempSync(join(tmpdir(), "web-")));
-    await web("lobby.create", { handle: "web" });
-    await expect(web("message.send", { to: "all", type: "update", body: "use AKIAIOSFODNN7EXAMPLE" }))
+  it("refuses to send a message containing a secret, unless a human allows it", async () => {
+    const { web } = await lobbyWithTwoAgents();
+    await expect(web.call("message.send", { to: "all", type: "update", body: "use AKIAIOSFODNN7EXAMPLE" }))
       .rejects.toMatchObject({ code: "secret_detected" });
-    expect(await web("message.send", { to: "all", type: "update", body: "use AKIAIOSFODNN7EXAMPLE", allowSecret: true })).toHaveProperty("id");
+    expect(await web.call("message.send", { to: "all", type: "update", body: "use AKIAIOSFODNN7EXAMPLE", allowSecret: true })).toHaveProperty("id");
   });
 
-  it("tells a session with no lobby to join one first", async () => {
-    const daemon = await startDaemon();
-    const web = await session(daemon, "claude-code", mkdtempSync(join(tmpdir(), "web-")));
-    await expect(web("lobby.status")).rejects.toMatchObject({ code: "no_seat" });
+  it("tells an agent that isn't in a lobby how to get added", async () => {
+    const web = await agentSession(await startDaemon(), "claude-code", "web");
+    await expect(web.call("lobby.status")).rejects.toMatchObject({ code: "no_seat", message: expect.stringContaining("dashboard") });
   });
 
   it("shows connected peers as active, not the stale status from their joined event", async () => {
-    const daemon = await startDaemon();
-    const web = await session(daemon, "claude-code", mkdtempSync(join(tmpdir(), "web-")));
-    const api = await session(daemon, "codex", mkdtempSync(join(tmpdir(), "api-")));
-    const { code } = await web("lobby.create", { handle: "web" });
-    await api("lobby.join", { code, handle: "api" });
-    await eventually(() => api("lobby.status"), (s) => s.connection === "live");
-
-    const players = await eventually(() => api("lobby.players"), (p) => p.length === 2 && p.every((a: { status: string }) => a.status === "active"));
-    expect(players.map((a: { status: string }) => a.status)).toEqual(["active", "active"]);
+    const { api } = await lobbyWithTwoAgents();
+    const players = await eventually(() => api.call("lobby.players"), (p) => p.every((a: { status: string }) => a.status === "active"));
+    expect(players.map((a: { status: string }) => a.status)).toEqual(["active", "active", "active"]);
   });
 
   it("refreshes an invalid or expired token by itself and reconnects (C6)", async () => {
     const home = mkdtempSync(join(tmpdir(), "al-home-"));
-    const cwd = mkdtempSync(join(tmpdir(), "web-"));
     let daemon = await startDaemon(home);
-    await (await session(daemon, "claude-code", cwd))("lobby.create", { handle: "web" });
+    const cwd = (await agentSession(daemon, "claude-code", "web")).cwd;
+    const web = await agentSession(daemon, "claude-code", "web", cwd);
+    const { lobbyId } = await daemon.call("lobby.create", { name: "x" });
+    await add(daemon, lobbyId, web, "web");
     await daemon.stop();
 
     const db = new DatabaseSync(join(home, "daemon.db"));
@@ -115,92 +104,45 @@ describe("daemon against the real relay", () => {
     db.close();
 
     daemon = await startDaemon(home);
-    const web = await session(daemon, "claude-code", cwd);
-    expect(await eventually(() => web("lobby.status"), (s) => s.connection === "live")).toMatchObject({ connection: "live" });
+    const again = await agentSession(daemon, "claude-code", "web", cwd);
+    expect(await eventually(() => again.call("lobby.status"), (s) => s.connection === "live")).toMatchObject({ connection: "live" });
   });
 
   it("inbox.wait returns as soon as a message arrives, and a newer wait replaces an older one", async () => {
-    const daemon = await startDaemon();
-    const web = await session(daemon, "claude-code", mkdtempSync(join(tmpdir(), "web-")));
-    const api = await session(daemon, "codex", mkdtempSync(join(tmpdir(), "api-")));
-    const { code } = await web("lobby.create", { handle: "web" });
-    await api("lobby.join", { code, handle: "api" });
-    await eventually(() => web("lobby.players"), (p) => p.length === 2);
+    const { web, api } = await lobbyWithTwoAgents();
+    expect(await api.call("inbox.wait", { timeoutMs: 200 })).toEqual({ unread: 0 });
 
-    expect(await api("inbox.wait", { timeoutMs: 200 })).toEqual({ unread: 0 });
-
-    const older = api("inbox.wait", { timeoutMs: 10_000 });
-    const newer = api("inbox.wait", { timeoutMs: 10_000 });
+    const older = api.call("inbox.wait", { timeoutMs: 10_000 });
+    const newer = api.call("inbox.wait", { timeoutMs: 10_000 });
     expect(await older).toEqual({ cancelled: true });
 
-    await web("message.send", { to: "api", type: "question", body: "ping?" });
+    await web.call("message.send", { to: "api-codex", type: "question", body: "ping?" });
     expect(await newer).toEqual({ unread: 1 });
-    expect(await api("inbox.wait", { timeoutMs: 10_000 })).toEqual({ unread: 1 });
+    expect(await api.call("inbox.wait", { timeoutMs: 10_000 })).toEqual({ unread: 1 });
   });
 
   it("batches acks for live events instead of acking each one", async () => {
-    const daemon = await startDaemon();
-    const web = await session(daemon, "claude-code", mkdtempSync(join(tmpdir(), "web-")));
-    const api = await session(daemon, "codex", mkdtempSync(join(tmpdir(), "api-")));
-    const { code } = await web("lobby.create", { handle: "web" });
-    await api("lobby.join", { code, handle: "api" });
-    await eventually(() => api("lobby.status"), (s) => s.connection === "live");
-    await eventually(() => web("lobby.players"), (p) => p.length === 2);
-
+    const { web, api } = await lobbyWithTwoAgents();
     const send = vi.spyOn(Connection.prototype, "send");
-    await Promise.all(Array.from({ length: 25 }, (_, i) => api("message.send", { to: "all", type: "update", body: `update ${i}` })));
-    await eventually(() => web("inbox.peek"), (p) => p.unread === 25);
+    await Promise.all(Array.from({ length: 25 }, (_, i) => api.call("message.send", { to: "all", type: "update", body: `update ${i}` })));
+    await eventually(() => web.call("inbox.peek"), (p) => p.unread === 25);
     await new Promise((r) => setTimeout(r, 400));
 
     const acks = send.mock.calls.map(([frame]) => frame).filter((f) => f.t === "ack") as { seq: number }[];
     send.mockRestore();
-    expect(acks.length).toBeLessThan(10);
-    const { seq } = (await web("inbox.pull", { limit: 25 })).at(-1);
+    expect(acks.length).toBeLessThan(15);
+    const { seq } = (await web.call("inbox.pull", { limit: 25 })).at(-1);
     expect(Math.max(...acks.map((a) => a.seq))).toBe(seq);
   });
 
-  it("lets the host mint a new code, and refuses members", async () => {
-    const daemon = await startDaemon();
-    const host = await session(daemon, "cli", mkdtempSync(join(tmpdir(), "host-")));
-    const member = await session(daemon, "codex", mkdtempSync(join(tmpdir(), "api-")));
-    const first = await host("lobby.create", { handle: "host" });
-    await member("lobby.join", { code: first.code, handle: "api" });
+  it("includes the sender's client and owner in messages, and updates presence", async () => {
+    const { web, api } = await lobbyWithTwoAgents();
+    await api.call("presence.set", { status: "busy", workingOn: "order status API" });
+    await web.call("message.send", { to: "api-codex", type: "question", body: "ready?" });
+    const [msg] = await eventually(() => api.call("inbox.pull", { limit: 5 }), (m) => m.length > 0);
+    expect(msg).toMatchObject({ from: "web-claude", fromClient: "claude-code", fromOwner: "tester" });
 
-    const { code } = await host("lobby.code", { maxUses: 1 });
-    expect(code).toMatch(/^[2-9]-[a-z]+-[a-z]+$/);
-    await expect(member("lobby.code")).rejects.toMatchObject({ code: "forbidden" });
-  });
-
-  it("holds an agent's own join until the human approves it (G42)", async () => {
-    const daemon = await startDaemon(undefined, "confirm");
-    const web = await session(daemon, "claude-code", mkdtempSync(join(tmpdir(), "web-")));
-    const { code } = await web("lobby.create", { handle: "web" });
-    const api = await session(daemon, "codex", mkdtempSync(join(tmpdir(), "api-")));
-
-    await expect(api("lobby.join", { code, handle: "api", source: "agent" })).rejects.toMatchObject({ code: "join_pending" });
-    const [request] = await daemon.call("approval.list", { scope: "join" });
-    expect(request).toMatchObject({ client: "codex", handle: "api" });
-
-    await daemon.call("approval.decide", { scope: "join", id: request.id, approve: true });
-    expect(await api("lobby.status")).toMatchObject({ handle: "api", role: "member" });
-    expect(await daemon.call("approval.list", { scope: "join" })).toEqual([]);
-  });
-
-  it("includes the sender's client in surfaced messages and updates presence", async () => {
-    const daemon = await startDaemon();
-    const web = await session(daemon, "claude-code", mkdtempSync(join(tmpdir(), "web-")));
-    const api = await session(daemon, "codex", mkdtempSync(join(tmpdir(), "api-")));
-    const { code } = await web("lobby.create", { handle: "web" });
-    await api("lobby.join", { code, handle: "api" });
-    await eventually(() => api("lobby.status"), (s) => s.connection === "live");
-    await eventually(() => web("lobby.players"), (p) => p.length === 2);
-
-    await api("presence.set", { status: "busy", workingOn: "order status API" });
-    await web("message.send", { to: "api", type: "question", body: "ready?" });
-    const [msg] = await eventually(() => api("inbox.pull", { limit: 5 }), (m) => m.length > 0);
-    expect(msg).toMatchObject({ from: "web", fromClient: "claude-code" });
-
-    const players = await eventually(() => web("lobby.players"), (p) => p.some((a: { status: string }) => a.status === "busy"));
-    expect(players.find((a: { handle: string }) => a.handle === "api")).toMatchObject({ status: "busy", workingOn: "order status API" });
+    const players = await eventually(() => web.call("lobby.players"), (p) => p.some((a: { status: string }) => a.status === "busy"));
+    expect(players.find((a: { handle: string }) => a.handle === "api-codex")).toMatchObject({ status: "busy", workingOn: "order status API" });
   });
 });

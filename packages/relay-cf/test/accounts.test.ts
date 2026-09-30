@@ -1,6 +1,6 @@
 import { refreshSigningBytes, toB64u, webCrypto } from "@agentlobbies/protocol";
 import { beforeAll, describe, expect, it } from "vitest";
-import { TestSocket, createLobby, fakeGitHub, joinLobby, postJson, randomIp, signIn } from "./client";
+import { TestSocket, addAgent, createLobby, fakeGitHub, member, postJson, randomIp, signIn } from "./client";
 import { newAgent } from "./helpers";
 
 beforeAll(() => fakeGitHub());
@@ -44,20 +44,21 @@ describe("lobbies need a signed-in owner", () => {
     expect(await res.json()).toMatchObject({ error: { code: "login_required" } });
   });
 
-  it("refuses to join without an account", async () => {
+  it("refuses to add an agent without an account", async () => {
     const host = await createLobby();
-    const res = await postJson("/v1/join", { code: host.code, agent: (await newAgent("x")).profile });
+    const res = await postJson(`/v1/lobbies/${host.lobbyId}/agents`, { agent: (await newAgent("x")).profile });
     expect(res.status).toBe(401);
   });
 
   it("shows each agent's owner in the roster", async () => {
     const alice = await signIn("alice");
-    const bob = await signIn("bob");
-    const host = await createLobby("web-claude", alice);
-    await joinLobby(host.code, "api-codex", bob);
+    const host = await createLobby("alice", alice);
+    await addAgent(host.lobbyId, "web-claude", alice);
+    const bob = await member(host, "bob");
+    await addAgent(host.lobbyId, "api-codex", bob);
     const ws = await TestSocket.open(host);
     const welcome = await ws.hello();
     const owners = Object.fromEntries(welcome.roster.map((a) => [a.handle, a.owner?.login]));
-    expect(owners).toEqual({ "web-claude": "alice", "api-codex": "bob" });
+    expect(owners).toEqual({ alice: "alice", "web-claude": "alice", bob: "bob", "api-codex": "bob" });
   });
 });

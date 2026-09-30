@@ -4,8 +4,7 @@ import {
 } from "@agentlobbies/protocol";
 import { DurableObject } from "cloudflare:workers";
 import { headSeq, pageFor } from "./lobby/events";
-import { admit, getAgent, initLobby, isActive, roleOf, roster, type AdmitResult, type NewAgent } from "./lobby/membership";
-import { insertCode } from "./codes";
+import { admit, getAgent, initLobby, isActive, removeFromLobby, roleOf, roster, type AdmitResult, type NewAgent } from "./lobby/membership";
 import { getMeta, getSettings, isOpen } from "./lobby/meta";
 import { lobbyExists, migrate } from "./lobby/schema";
 import { doSend } from "./lobby/send";
@@ -70,15 +69,15 @@ export class LobbyDurableObject extends DurableObject<Env> {
     return ok ? { role: agent.role as Role } : { error: "unauthorized" };
   }
 
-  async mintCode(
-    agentId: string, opts: { role: "member" | "observer"; ttlMs: number; maxUses?: number },
-  ): Promise<{ code: string; expiresAt: number } | { error: "forbidden" | "lobby_closed" }> {
+  /** An agent's owner, or the lobby owner, removes an agent (LLD 14.1). */
+  async removeAgent(agentId: string, actor: { userId: string; isLobbyOwner: boolean }): Promise<{ removed: true } | { error: "not_found" | "forbidden" }> {
     const { sql } = this.ctx.storage;
-    if (!lobbyExists(sql) || !isOpen(sql)) return { error: "lobby_closed" };
-    if (roleOf(sql, agentId) !== "host") return { error: "forbidden" };
-    const expiresAt = Date.now() + opts.ttlMs;
-    const code = await insertCode(this.env.DB, getMeta(sql, "lobby_id")!, { role: opts.role, expiresAt, maxUses: opts.maxUses });
-    return { code, expiresAt };
+    const agent = lobbyExists(sql) ? getAgent(sql, agentId) : undefined;
+    if (!isActive(agent)) return { error: "not_found" };
+    if (agent.role === "host" || (agent.owner_id !== actor.userId && !actor.isLobbyOwner)) return { error: "forbidden" };
+    this.fanOut(removeFromLobby(this.ctx.storage, agentId, Date.now()));
+    for (const ws of this.ctx.getWebSockets(agentId)) ws.close(4003, "removed");
+    return { removed: true };
   }
 
   /**

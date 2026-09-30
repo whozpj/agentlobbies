@@ -62,18 +62,22 @@ export async function startDashboard(source: DashboardSource, staticDir: string 
 }
 
 async function handleApi(source: DashboardSource, req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
-  const path = url.pathname;
-  const messages = path.match(/^\/api\/lobbies\/([0-9a-f]{64})\/messages$/);
-  const approval = path.match(/^\/api\/approvals\/([0-9A-HJKMNP-TV-Z]{26})$/);
+  const route = `${req.method} ${url.pathname}`;
+  const lobby = url.pathname.match(/^\/api\/lobbies\/([0-9a-f]{64})\//)?.[1];
+  const agentId = url.pathname.match(/\/agents\/([0-9A-HJKMNP-TV-Z]{26})$/)?.[1];
+  const body = async () => JSON.parse((await readBody(req)) || "{}") as Record<string, unknown>;
+  const reply = async (method: string, params: Record<string, unknown> = {}) => send(res, 200, await source.call(method, params));
 
-  if (req.method === "GET" && path === "/api/lobbies") return send(res, 200, await source.call("dashboard.lobbies", {}));
-  if (req.method === "GET" && messages) return send(res, 200, await source.call("dashboard.messages", { lobbyId: messages[1] }));
-  if (req.method === "GET" && path === "/api/approvals") return send(res, 200, await source.call("approval.list", { scope: "join" }));
-  if (req.method === "POST" && approval) {
-    const body = JSON.parse((await readBody(req)) || "{}") as { approve?: boolean };
-    return send(res, 200, await source.call("approval.decide", { scope: "join", id: approval[1], approve: body.approve === true }));
-  }
-  if (req.method === "GET" && path === "/api/events") return streamActivity(source, req, res);
+  if (route === "GET /api/me") return reply("account.status");
+  if (route === "GET /api/lobbies") return reply("dashboard.lobbies");
+  if (route === "POST /api/lobbies") return reply("lobby.create", await body());
+  if (route === "GET /api/agents") return reply("agents.list");
+  if (route === "POST /api/invites/accept") return reply("invite.accept", await body());
+  if (route === "GET /api/events") return streamActivity(source, req, res);
+  if (lobby && route === `GET /api/lobbies/${lobby}/messages`) return reply("dashboard.messages", { lobbyId: lobby });
+  if (lobby && route === `POST /api/lobbies/${lobby}/invites`) return reply("invite.create", { ...(await body()), lobbyId: lobby });
+  if (lobby && route === `POST /api/lobbies/${lobby}/agents`) return reply("lobby.addAgent", { ...(await body()), lobbyId: lobby });
+  if (lobby && agentId && req.method === "DELETE") return reply("lobby.removeAgent", { lobbyId: lobby, agentId });
   send(res, 404, { error: "not found" });
 }
 

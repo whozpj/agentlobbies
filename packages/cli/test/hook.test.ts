@@ -28,14 +28,24 @@ async function send(body: string) {
   for (let i = 0; i < 50 && (await web.call("inbox.peek")).unread === 0; i++) await new Promise((r) => setTimeout(r, 100));
 }
 
+let lobbyId: string;
+
+/** The user adds an agent session (identified by its seat key) to the lobby, as the dashboard does. */
+async function addToLobby(seatKey: string, handle: string) {
+  await web.call("lobby.addAgent", { lobbyId, seatKey, handle });
+}
+
 beforeAll(async () => {
   process.env.AGENTLOBBIES_RELAY_URL = inject("relayUrl");
   web = await openSession({ client: "claude-code", cwd: webDir, home });
   await web.call("account.login", { githubToken: "gho_fake_tester" });
-  api = await openSession({ client: "cli", cwd: mkdtempSync(join(tmpdir(), "api-")), home });
-  const { code } = await web.call("lobby.create", { handle: "web" });
-  await api.call("lobby.join", { code, handle: "api" });
-  for (let i = 0; i < 50 && (await api.call("lobby.players")).length < 2; i++) await new Promise((r) => setTimeout(r, 100));
+  api = await openSession({ client: "codex", cwd: mkdtempSync(join(tmpdir(), "api-")), home });
+  ({ lobbyId } = await web.call("lobby.create", { name: "hooks" }));
+  await addToLobby((await web.call("session.open", { client: "claude-code", cwd: webDir })).seatKey, "web");
+  await addToLobby((await api.call("agents.list")).find((a: { client: string }) => a.client === "codex").seatKey, "api");
+  await web.call("inbox.pull", { limit: 25 });
+  await api.call("inbox.pull", { limit: 25 });
+  for (let i = 0; i < 50 && (await api.call("lobby.players")).length < 3; i++) await new Promise((r) => setTimeout(r, 100));
 });
 
 afterAll(async () => {
@@ -74,24 +84,18 @@ describe("agentlobbies-hook", () => {
     expect(r).toEqual({ code: 0, stdout: "", stderr: "" });
   });
 
-  it("wait keeps watching a folder whose join is still pending, and wakes once it's in and messaged", async () => {
+  it("wait keeps watching a folder that isn't in a lobby yet, and wakes it when the user adds it", async () => {
     const lateDir = mkdtempSync(join(tmpdir(), "late-"));
+    const late = await openSession({ client: "claude-code", cwd: lateDir, home });
     const waiting = runHook("wait", { cwd: lateDir });
     await new Promise((r) => setTimeout(r, 1000));
 
-    const late = await openSession({ client: "claude-code", cwd: lateDir, home });
-    const { code } = await web.call("lobby.code");
-    await late.call("lobby.join", { code, handle: "late" });
-    for (let i = 0; i < 50 && !(await api.call("lobby.players")).some((p: { handle: string }) => p.handle === "late"); i++) {
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    await api.call("message.send", { to: "late", type: "question", body: "welcome aboard?" });
+    await addToLobby((await web.call("agents.list")).find((a: { cwd: string }) => a.cwd.endsWith(lateDir.split("/").pop()!)).seatKey, "late");
 
     const r = await waiting;
     expect(r.code).toBe(2);
-    expect(r.stderr).toContain("welcome aboard?");
+    expect(r.stderr).toContain("You were added to lobby hooks by @tester as late");
     late.close();
-    await web.call("inbox.pull", { limit: 25 }); // hosts see every message, including this one
   });
 
   it("wait blocks until a message arrives, then wakes the agent with exit code 2", async () => {

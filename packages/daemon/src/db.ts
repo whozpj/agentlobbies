@@ -48,14 +48,19 @@ const SCHEMA = `
     machine_id TEXT NOT NULL
   );
 
-  CREATE TABLE IF NOT EXISTS join_requests (
-    id         TEXT PRIMARY KEY,
-    seat_key   TEXT NOT NULL,
-    client     TEXT NOT NULL,
-    code       TEXT NOT NULL,
-    handle     TEXT NOT NULL,
-    owns_json  TEXT NOT NULL,
-    created_at INTEGER NOT NULL
+  CREATE TABLE IF NOT EXISTS local_agents (
+    seat_key     TEXT PRIMARY KEY,
+    client       TEXT NOT NULL,
+    cwd          TEXT NOT NULL,
+    last_seen_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS notices (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    seat_id     TEXT NOT NULL,
+    body        TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    surfaced_at INTEGER
   );
 
   CREATE TABLE IF NOT EXISTS roster (
@@ -94,13 +99,17 @@ export interface Account {
   machine_id: string;
 }
 
-export interface JoinRequest {
-  id: string;
+export interface LocalAgent {
   seat_key: string;
   client: string;
-  code: string;
-  handle: string;
-  owns: string[];
+  cwd: string;
+  last_seen_at: number;
+}
+
+export interface Notice {
+  id: number;
+  body: string;
+  created_at: number;
 }
 
 export class Db {
@@ -171,8 +180,10 @@ export class Db {
   }
 
   unreadCount(seatId: string): number {
-    return (this.db.prepare("SELECT COUNT(*) AS n FROM inbox WHERE seat_id = ? AND kind = 'message' AND own = 0 AND surfaced_at IS NULL")
+    const messages = (this.db.prepare("SELECT COUNT(*) AS n FROM inbox WHERE seat_id = ? AND kind = 'message' AND own = 0 AND surfaced_at IS NULL")
       .get(seatId) as { n: number }).n;
+    const notices = (this.db.prepare("SELECT COUNT(*) AS n FROM notices WHERE seat_id = ? AND surfaced_at IS NULL").get(seatId) as { n: number }).n;
+    return messages + notices;
   }
 
   /** Oldest unread messages first; marks exactly those as read. */
@@ -247,21 +258,40 @@ export class Db {
     this.db.prepare("DELETE FROM account").run();
   }
 
-  addJoinRequest(r: JoinRequest): void {
-    this.db.prepare("INSERT INTO join_requests (id, seat_key, client, code, handle, owns_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(r.id, r.seat_key, r.client, r.code, r.handle, JSON.stringify(r.owns), Date.now());
+  upsertLocalAgent(seatKey: string, client: string, cwd: string): void {
+    this.db.prepare(
+      `INSERT INTO local_agents (seat_key, client, cwd, last_seen_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT (seat_key) DO UPDATE SET last_seen_at = excluded.last_seen_at`,
+    ).run(seatKey, client, cwd, Date.now());
   }
 
-  joinRequests(): JoinRequest[] {
-    const rows = this.db.prepare("SELECT id, seat_key, client, code, handle, owns_json FROM join_requests ORDER BY created_at").all() as
-      { id: string; seat_key: string; client: string; code: string; handle: string; owns_json: string }[];
-    return rows.map(({ owns_json, ...r }) => ({ ...r, owns: JSON.parse(owns_json) }));
+  localAgents(): LocalAgent[] {
+    return this.db.prepare("SELECT * FROM local_agents ORDER BY last_seen_at DESC").all() as unknown as LocalAgent[];
   }
 
-  deleteJoinRequest(id: string): void {
-    this.db.prepare("DELETE FROM join_requests WHERE id = ?").run(id);
+  localAgent(seatKey: string): LocalAgent | undefined {
+    return this.db.prepare("SELECT * FROM local_agents WHERE seat_key = ?").get(seatKey) as LocalAgent | undefined;
   }
 
+  /** Seats (active) that belong to a seat key, e.g. every lobby an agent is in. */
+  seatsFor(seatKey: string): Seat[] {
+    return this.db.prepare("SELECT * FROM seats WHERE seat_key = ? AND state = 'active'").all(seatKey) as unknown as Seat[];
+  }
+
+  activeSeatIn(seatKey: string, lobbyId: string): Seat | undefined {
+    return this.db.prepare("SELECT * FROM seats WHERE seat_key = ? AND lobby_id = ? AND state = 'active'").get(seatKey, lobbyId) as Seat | undefined;
+  }
+
+  addNotice(seatId: string, body: string): void {
+    this.db.prepare("INSERT INTO notices (seat_id, body, created_at) VALUES (?, ?, ?)").run(seatId, body, Date.now());
+  }
+
+  takeNotices(seatId: string): Notice[] {
+    const rows = this.db.prepare("SELECT id, body, created_at FROM notices WHERE seat_id = ? AND surfaced_at IS NULL ORDER BY id").all(seatId) as unknown as Notice[];
+    const mark = this.db.prepare("UPDATE notices SET surfaced_at = ? WHERE id = ?");
+    for (const n of rows) mark.run(Date.now(), n.id);
+    return rows;
+  }
 
   replaceRoster(seatId: string, agents: AgentProfile[]): void {
     this.db.prepare("DELETE FROM roster WHERE seat_id = ?").run(seatId);

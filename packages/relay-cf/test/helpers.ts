@@ -11,9 +11,9 @@ export function withStorage<T>(fn: (storage: DurableObjectStorage) => T | Promis
 
 export const LOBBY_ID = "a".repeat(64);
 
-export async function newAgent(handle: string) {
+export async function newAgent(handle: string, client: JoinProfile["client"] = "claude-code") {
   const keys = await generateSeatKeys();
-  const profile: JoinProfile = { handle, client: "claude-code", owns: [], workingOn: "", publicKey: toB64u(keys.publicKey) };
+  const profile: JoinProfile = { handle, client, owns: [], workingOn: "", publicKey: toB64u(keys.publicKey) };
   return { agentId: ulid(), profile, keys };
 }
 

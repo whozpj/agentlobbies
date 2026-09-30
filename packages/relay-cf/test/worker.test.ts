@@ -3,7 +3,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { ulid } from "ulid";
 import { beforeAll, describe, expect, it } from "vitest";
-import { TestSocket, api, createLobby, fakeGitHub, joinLobby, postJson, randomIp, signIn, type Seat } from "./client";
+import { TestSocket, addAgent, api, createLobby, fakeGitHub, postJson, randomIp, signIn, type Seat } from "./client";
 import { newAgent } from "./helpers";
 
 function envelope(seat: Seat, fields: Record<string, unknown> = {}) {
@@ -22,24 +22,10 @@ describe("REST", () => {
     expect(await res.json()).toMatchObject({ ok: true });
   });
 
-  it("creates a lobby and returns a code, token, and lobby id", async () => {
+  it("creates a lobby and returns a token and lobby id", async () => {
     const host = await createLobby();
     expect(host.lobbyId).toMatch(/^[0-9a-f]{64}$/);
-    expect(host.code).toMatch(/^[2-9]-[a-z]+-[a-z]+$/);
     expect(host.token.split(".")).toHaveLength(3);
-  });
-
-  it("joins with a code, accepting it in any case and spacing", async () => {
-    const host = await createLobby();
-    const messy = " " + host.code.toUpperCase().replace(/-/g, " ") + " ";
-    const member = await joinLobby(messy, "backend");
-    expect(member.lobbyId).toBe(host.lobbyId);
-  });
-
-  it("rejects an unknown code with invalid_code", async () => {
-    const res = await postJson("/v1/join", { code: "2-abandon-ability", agent: (await createLobby()).profile }, randomIp(), (await signIn("joiner")).token);
-    expect(res.status).toBe(404);
-    expect(await res.json()).toMatchObject({ error: { code: "invalid_code" } });
   });
 
   it("returns 400 bad_request for an invalid body", async () => {
@@ -74,36 +60,6 @@ describe("REST", () => {
   });
 });
 
-describe("codes", () => {
-  const mint = (seat: Seat, body: unknown = {}) => api(`/v1/lobbies/${seat.lobbyId}/codes`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${seat.token}` },
-    body: JSON.stringify(body),
-  });
-
-  it("lets the host mint a code that others can join with", async () => {
-    const host = await createLobby();
-    const res = await mint(host, { role: "member", maxUses: 1 });
-    expect(res.status).toBe(201);
-    const { code } = await res.json<{ code: string }>();
-    expect((await joinLobby(code, "late-joiner")).lobbyId).toBe(host.lobbyId);
-  });
-
-  it("refuses code minting by a member (I9)", async () => {
-    const host = await createLobby();
-    const member = await joinLobby(host.code, "backend");
-    const res = await mint(member);
-    expect(res.status).toBe(403);
-    expect(await res.json()).toMatchObject({ error: { code: "forbidden" } });
-  });
-
-  it("requires a token", async () => {
-    const host = await createLobby();
-    const res = await api(`/v1/lobbies/${host.lobbyId}/codes`, { method: "POST", body: "{}" });
-    expect(res.status).toBe(401);
-  });
-});
-
 describe("token refresh", () => {
   async function refresh(seat: Seat, ts = Date.now(), keys = seat.keys) {
     const sig = await webCrypto.sign(keys.secretKey, refreshSigningBytes({ lobbyId: seat.lobbyId, agentId: seat.agentId, ts }));
@@ -134,7 +90,7 @@ describe("token refresh", () => {
 describe("WebSocket", () => {
   it("welcomes with the roster, then replays history ending in more: false", async () => {
     const host = await createLobby();
-    await joinLobby(host.code, "backend");
+    await addAgent(host.lobbyId, "backend", host.account);
     const ws = await TestSocket.open(host);
     const welcome = await ws.hello();
     expect(welcome).toMatchObject({ agentId: host.agentId, role: "host", headSeq: 3 });
@@ -145,7 +101,7 @@ describe("WebSocket", () => {
 
   it("delivers a broadcast live to other agents and acks the sender with its seq", async () => {
     const host = await createLobby();
-    const member = await joinLobby(host.code, "backend");
+    const member = await addAgent(host.lobbyId, "backend", host.account);
     const hostWs = await TestSocket.open(host);
     await hostWs.hello();
     const memberWs = await TestSocket.open(member);
@@ -182,7 +138,7 @@ describe("WebSocket", () => {
 
   it("replays only what an agent missed after reconnecting with its cursor (I3)", async () => {
     const host = await createLobby();
-    const member = await joinLobby(host.code, "backend");
+    const member = await addAgent(host.lobbyId, "backend", host.account);
     const hostWs = await TestSocket.open(host);
     await hostWs.hello();
 
@@ -209,7 +165,7 @@ describe("WebSocket", () => {
 
   it("shows connected agents as active, to live agents and to newcomers", async () => {
     const host = await createLobby();
-    const member = await joinLobby(host.code, "backend");
+    const member = await addAgent(host.lobbyId, "backend", host.account);
     const hostWs = await TestSocket.open(host);
     await hostWs.hello();
 
@@ -222,7 +178,7 @@ describe("WebSocket", () => {
 
   it("marks an agent offline once its heartbeats stop, the next time the lobby is active", async () => {
     const host = await createLobby();
-    const member = await joinLobby(host.code, "backend");
+    const member = await addAgent(host.lobbyId, "backend", host.account);
     const silent = await TestSocket.open(member);
     await silent.hello();
     const silentSince = Date.now();

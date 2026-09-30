@@ -17,7 +17,7 @@ const daemons: Daemon[] = [];
 afterEach(async () => { for (const d of daemons.splice(0)) await d.stop(); });
 
 async function startDaemon() {
-  const daemon = new Daemon({ home: mkdtempSync(join(tmpdir(), "al-home-")), relayUrl: inject("relayUrl"), agentJoin: "allow" });
+  const daemon = new Daemon({ home: mkdtempSync(join(tmpdir(), "al-home-")), relayUrl: inject("relayUrl") });
   await daemon.start();
   daemons.push(daemon);
   await daemon.call("account.login", { githubToken: "gho_fake_tester" });
@@ -26,7 +26,7 @@ async function startDaemon() {
 
 /** An agent's view: an MCP client connected to our server for one client in one folder. */
 async function agent(daemon: Daemon, client: string) {
-  const { sessionId } = await daemon.call("session.open", { client, cwd: mkdtempSync(join(tmpdir(), `${client}-`)) });
+  const { sessionId, seatKey } = await daemon.call("session.open", { client, cwd: mkdtempSync(join(tmpdir(), `${client}-`)) });
   const server = createServer((method, params) => daemon.call(method, { sessionId, ...params }));
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
   await server.connect(serverSide);
@@ -38,8 +38,9 @@ async function agent(daemon: Daemon, client: string) {
     const text = (result.content as { type: string; text: string }[]).map((c) => c.text).join("\n");
     return { text, isError: result.isError === true };
   };
-  const createLobby = (handle: string) => daemon.call("lobby.create", { sessionId, handle });
-  return { mcp, tool, createLobby };
+  /** The user adds this agent to a lobby from the dashboard. */
+  const addTo = (lobbyId: string, handle: string, owns: string[] = []) => daemon.call("lobby.addAgent", { lobbyId, seatKey, handle, owns });
+  return { mcp, tool, addTo };
 }
 
 async function eventually(fn: () => Promise<{ text: string }>, contains: string) {
@@ -55,41 +56,35 @@ describe("MCP server", () => {
     const web = await agent(await startDaemon(), "claude-code");
     const { tools } = await web.mcp.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
-      "lobby_ask", "lobby_inbox", "lobby_join", "lobby_players", "lobby_post", "lobby_reply", "lobby_set_status", "lobby_status",
+      "lobby_ask", "lobby_inbox", "lobby_players", "lobby_post", "lobby_reply", "lobby_set_status", "lobby_status",
     ]);
     for (const t of tools) expect(t.description!.length).toBeLessThan(400);
   });
 
-  it("asks agents joining a lobby to declare what they own", async () => {
-    const web = await agent(await startDaemon(), "claude-code");
-    const join = (await web.mcp.listTools()).tools.find((t) => t.name === "lobby_join")!;
-    expect(join.description).toMatch(/owner:<area>/);
-    expect(join.inputSchema.required).toContain("owns");
-  });
-
-  it("tells a signed-out agent to have its user sign in", async () => {
-    const daemon = new Daemon({ home: mkdtempSync(join(tmpdir(), "al-home-")), relayUrl: inject("relayUrl"), agentJoin: "allow" });
-    await daemon.start();
-    daemons.push(daemon);
+  it("tells an agent it was added to a lobby, on its next tool call", async () => {
+    const daemon = await startDaemon();
     const web = await agent(daemon, "claude-code");
-    const r = await web.tool("lobby_join", { code: "2-abandon-ability", handle: "web", owns: [] });
-    expect(r.isError).toBe(true);
-    expect(r.text).toContain("agentlobbies login");
+    const { lobbyId } = await daemon.call("lobby.create", { name: "food-app" });
+    await web.addTo(lobbyId, "web-claude", ["web"]);
+    const r = await web.tool("lobby_status");
+    expect(r.text).toContain("[lobby notice] You were added to lobby food-app by @tester as web-claude");
   });
 
   it("explains how to get into a lobby when the agent is not in one", async () => {
     const web = await agent(await startDaemon(), "claude-code");
     const r = await web.tool("lobby_status");
     expect(r.isError).toBe(true);
-    expect(r.text).toContain("Ask the user for a lobby code");
+    expect(r.text).toContain("agentlobbies dashboard");
   });
 
   it("delivers a question with the peer framing on the next tool call, and the answer back (E1)", async () => {
     const daemon = await startDaemon();
     const web = await agent(daemon, "claude-code");
     const api = await agent(daemon, "codex");
-    const { code } = await web.createLobby("web-claude");
-    expect((await api.tool("lobby_join", { code, handle: "api-codex", owns: ["api"] })).text).toContain("api-codex");
+    const { lobbyId } = await daemon.call("lobby.create", { name: "food-app" });
+    await web.addTo(lobbyId, "web-claude", ["web"]);
+    await api.addTo(lobbyId, "api-codex", ["api"]);
+    await api.tool("lobby_inbox");
     expect((await eventually(() => web.tool("lobby_players"), "api-codex")).text).toMatch(/api-codex \(codex\) · @tester/);
 
     expect((await web.tool("lobby_ask", { to: "owner:api", question: "What field holds the ETA?" })).isError).toBe(false);
@@ -108,8 +103,10 @@ describe("MCP server", () => {
     const daemon = await startDaemon();
     const web = await agent(daemon, "claude-code");
     const api = await agent(daemon, "codex");
-    const { code } = await web.createLobby("web");
-    await api.tool("lobby_join", { code, handle: "api", owns: [] });
+    const { lobbyId } = await daemon.call("lobby.create", { name: "x" });
+    await web.addTo(lobbyId, "web");
+    await api.addTo(lobbyId, "api");
+    await api.tool("lobby_inbox");
     await eventually(() => web.tool("lobby_players"), "api");
 
     await web.tool("lobby_post", { body: "x".repeat(5000) });

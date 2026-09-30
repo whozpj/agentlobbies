@@ -13,9 +13,8 @@ const INSTRUCTIONS =
   "check with your user first. Ask peers instead of guessing about their areas. Keep messages short.";
 
 const ERROR_TEXT: Record<string, string> = {
-  no_seat: "You are not in a lobby. Ask the user for a lobby code, then call lobby_join.",
+  no_seat: "You are not in a lobby yet. Your user can add you from the dashboard (`agentlobbies dashboard`); you'll be told when they do.",
   login_required: "Your user isn't signed in. Ask them to run `agentlobbies login`, then try again.",
-  join_pending: "Your join request is waiting. Ask your user to approve it with `agentlobbies approve`, then continue.",
   invalid_code: "That lobby code is invalid or expired. Ask the user for a new one.",
   thread_too_deep: "This thread is too long. Stop replying and summarize for your user.",
   kicked: "You are no longer in this lobby.",
@@ -57,20 +56,6 @@ export function createServer(call: DaemonCall): McpServer {
     }
     return result;
   }
-
-  server.registerTool("lobby_join", {
-    description:
-      "Join a lobby with a code your user gave you. Pick a short handle like 'api-codex'. Always list the areas you own " +
-      "(for example ['web'] or ['api', 'auth']) so peers can reach you with owner:<area>.",
-    inputSchema: {
-      code: z.string(),
-      handle: z.string(),
-      owns: z.array(z.string()).max(16).describe("Areas of the codebase you own, like ['api']. Use [] only if you own nothing."),
-    },
-  }, (args) => withNewMessages(async () => {
-    const r = await call("lobby.join", { ...args, source: "agent" });
-    return text(`Joined lobby ${r.lobbyId.slice(0, 8)} as ${r.handle} (${r.role}). Call lobby_players to see who is here.`);
-  }));
 
   server.registerTool("lobby_status", {
     description: "Show your lobby, your handle, the connection state, and how many unread messages you have.",

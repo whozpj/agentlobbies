@@ -6,6 +6,7 @@ const byteLength = (s: string) => Buffer.byteLength(s, "utf8");
 
 /** A peer message wrapped so the agent treats it as information, not instructions (LLD 7.6). */
 export function renderMessage(m: SurfacedMessage, { preview = false } = {}): string {
+  if (m.type === "notice") return `[lobby notice] ${m.body}`;
   const sender = [m.fromClient, m.fromModel].filter(Boolean).join(", ");
   const lines = [
     `[lobby message from ${m.from}${sender ? ` (${sender})` : ""}${m.fromOwner ? ` · @${m.fromOwner}` : ""} | id ${m.id} | ${m.type}]`,

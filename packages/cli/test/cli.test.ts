@@ -18,9 +18,11 @@ const home = mkdtempSync(join("/tmp", "al-cli-"));
 const folder = (name: string) => mkdtempSync(join(tmpdir(), `${name}-`));
 
 afterAll(async () => {
-  const daemon = await RpcClient.connect(join(home, "daemon.sock")).catch(() => undefined);
-  await daemon?.call("daemon.shutdown").catch(() => {});
-  daemon?.close();
+  for (const h of [home, ...people.values()]) {
+    const daemon = await RpcClient.connect(join(h, "daemon.sock")).catch(() => undefined);
+    await daemon?.call("daemon.shutdown").catch(() => {});
+    daemon?.close();
+  }
 });
 
 async function cli(cwd: string, ...args: string[]): Promise<{ out: string; code: number }> {
@@ -46,7 +48,17 @@ async function eventually(fn: () => Promise<{ out: string }>, contains: string) 
   }
 }
 
-const codeIn = (out: string) => out.match(/[2-9]-[a-z]+-[a-z]+/)![0];
+/** Runs the CLI as another signed-in person, with their own daemon home. */
+const people = new Map<string, string>();
+async function asPerson(login: string, ...args: string[]) {
+  let personHome = people.get(login);
+  if (!personHome) {
+    personHome = mkdtempSync(join("/tmp", `al-${login}-`));
+    people.set(login, personHome);
+    await cliWith({ AGENTLOBBIES_HOME: personHome, AGENTLOBBIES_GITHUB_CLIENT_ID: `test-${login}` }, folder(login), "login", "--no-open");
+  }
+  return cliWith({ AGENTLOBBIES_HOME: personHome }, folder(login), ...args);
+}
 
 beforeAll(async () => {
   const login = await cli(folder("login"), "login");
@@ -62,75 +74,39 @@ describe("agentlobbies CLI", () => {
   });
 
   it("asks you to sign in before creating a lobby", async () => {
-    const r = await cliWith({ AGENTLOBBIES_HOME: mkdtempSync(join("/tmp", "al-new-")) }, folder("x"), "create");
+    const freshHome = mkdtempSync(join("/tmp", "al-new-"));
+    people.set("signed-out", freshHome);
+    const r = await cliWith({ AGENTLOBBIES_HOME: freshHome }, folder("x"), "create");
     expect(r.code).toBe(1);
     expect(r.out).toContain("agentlobbies login");
   });
 
-  it("shows each player's owner", async () => {
-    const hostDir = folder("host");
-    const code = codeIn((await cli(hostDir, "create", "--handle", "prithvi")).out);
-    await cli(folder("api"), "join", code, "--handle", "api");
-    expect((await eventually(() => cli(hostDir, "players"), "api")).out).toContain("@tester");
+  it("creates a lobby and prints an invite link that another person accepts", async () => {
+    const created = await cli(folder("x"), "create", "food-app");
+    expect(created.out).toContain("food-app");
+    const invite = await cli(folder("x"), "invite");
+    const link = invite.out.match(/https?:\/\/\S+\/invite\/[\w-]+/)![0];
+
+    const bob = await asPerson("bob", "accept", link);
+    expect(bob.out).toContain("Joined food-app");
+    const players = await eventually(() => cli(folder("x"), "players"), "bob");
+    expect(players.out).toMatch(/bob\s+@bob/);
+    expect(players.out).toMatch(/tester\s+@tester/);
   });
 
-  it("creates a lobby, lets another folder join, and shows both players", async () => {
-    const hostDir = folder("host");
-    const created = await cli(hostDir, "create", "--name", "food-app", "--handle", "prithvi");
-    expect(created.code).toBe(0);
-    expect(created.out).toContain("Share this code");
+  it("sends a message that the other person reads in their inbox", async () => {
+    await cli(folder("x"), "create", "chat");
+    const link = (await cli(folder("x"), "invite")).out.match(/https?:\/\/\S+\/invite\/[\w-]+/)![0];
+    await asPerson("carol", "accept", link);
+    await eventually(() => cli(folder("x"), "players"), "carol");
 
-    const apiDir = folder("api");
-    const joined = await cli(apiDir, "join", codeIn(created.out), "--handle", "api-human", "--owns", "api,auth");
-    expect(joined.out).toContain("Joined as api-human");
-
-    const players = await eventually(() => cli(hostDir, "players"), "api-human");
-    expect(players.out).toContain("prithvi");
-    expect(players.out).toContain("api, auth");
-    expect((await cli(hostDir, "status")).out).toContain("food-app");
+    expect((await cli(folder("x"), "send", "carol", "Is", "estimatedArrival", "ISO", "8601?")).code).toBe(0);
+    const inbox = await eventually(() => asPerson("carol", "inbox"), "estimatedArrival");
+    expect(inbox.out).toContain("tester (question)");
   });
 
-  it("sends a message that the other folder reads in its inbox", async () => {
-    const hostDir = folder("host");
-    const apiDir = folder("api");
-    const code = codeIn((await cli(hostDir, "create", "--handle", "host")).out);
-    await cli(apiDir, "join", code, "--handle", "api");
-    await eventually(() => cli(hostDir, "players"), "api");
-
-    expect((await cli(hostDir, "send", "api", "Is", "estimatedArrival", "ISO", "8601?")).code).toBe(0);
-    const inbox = await eventually(() => cli(apiDir, "inbox"), "estimatedArrival");
-    expect(inbox.out).toContain("host (question)");
-  });
-
-  it("mints a code for the host and refuses members with exit code 6", async () => {
-    const hostDir = folder("host");
-    const apiDir = folder("api");
-    const code = codeIn((await cli(hostDir, "create", "--handle", "host")).out);
-    await cli(apiDir, "join", code, "--handle", "api");
-
-    expect(codeIn((await cli(hostDir, "code", "--uses", "1")).out)).toMatch(/^[2-9]-/);
-    const refused = await cli(apiDir, "code");
-    expect(refused.code).toBe(6);
-  });
-
-  it("approves a join that an agent started (G42)", async () => {
-    const hostDir = folder("host");
-    const code = codeIn((await cli(hostDir, "create", "--handle", "host")).out);
-
-    const daemon = await RpcClient.connect(join(home, "daemon.sock"));
-    const { sessionId } = await daemon.call("session.open", { client: "codex", cwd: folder("agent") });
-    await expect(daemon.call("lobby.join", { sessionId, code, handle: "api-codex", source: "agent" })).rejects.toMatchObject({ code: "join_pending" });
-
-    const pending = await cli(hostDir, "approve");
-    expect(pending.out).toContain("api-codex");
-    const id = pending.out.match(/\b([0-9A-HJKMNP-TV-Z]{26})\b/)![1]!;
-    expect((await cli(hostDir, "approve", id)).out).toContain("Approved");
-    expect(await daemon.call("lobby.status", { sessionId })).toMatchObject({ handle: "api-codex" });
-    daemon.close();
-  });
-
-  it("exits with code 4 for an invalid code", async () => {
-    const r = await cli(folder("x"), "join", "2-abandon-ability", "--handle", "someone");
+  it("exits with code 4 for an invalid invite", async () => {
+    const r = await cli(folder("x"), "accept", "https://relay.test/invite/not-a-real-invite-token-xx");
     expect(r.code).toBe(4);
     expect(r.out).toContain("invalid or expired");
   });

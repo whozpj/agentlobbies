@@ -10,15 +10,10 @@ const running: Daemon[] = [];
 afterEach(async () => { for (const d of running.splice(0)) await d.stop(); });
 
 async function startDaemon(home = mkdtempSync(join(tmpdir(), "al-home-"))) {
-  const daemon = new Daemon({ home, relayUrl, agentJoin: "allow" });
+  const daemon = new Daemon({ home, relayUrl });
   await daemon.start();
   running.push(daemon);
   return daemon;
-}
-
-async function session(daemon: Daemon, client: string) {
-  const { sessionId } = await daemon.call("session.open", { client, cwd: mkdtempSync(join(tmpdir(), `${client}-`)) });
-  return (method: string, params: Record<string, unknown> = {}) => daemon.call(method, { sessionId, ...params });
 }
 
 describe("accounts", () => {
@@ -32,28 +27,10 @@ describe("accounts", () => {
     expect(await daemon.call("account.status", {})).toMatchObject({ login: "whozpj" });
   });
 
-  it("asks you to sign in before creating or joining a lobby", async () => {
-    const web = await session(await startDaemon(), "claude-code");
-    await expect(web("lobby.create", { handle: "web" })).rejects.toMatchObject({ code: "login_required" });
-    await expect(web("lobby.join", { code: "2-abandon-ability", handle: "web" })).rejects.toMatchObject({ code: "login_required" });
-  });
-
-  it("shows which person owns each agent", async () => {
-    const laptop = await startDaemon();
-    const server = await startDaemon();
-    await laptop.call("account.login", { githubToken: "gho_fake_alice" });
-    await server.call("account.login", { githubToken: "gho_fake_bob" });
-    const web = await session(laptop, "claude-code");
-    const api = await session(server, "codex");
-    const { code } = await web("lobby.create", { handle: "web-claude" });
-    await api("lobby.join", { code, handle: "api-codex", owns: ["api"] });
-
-    let players: { handle: string; owner?: { login: string } }[] = [];
-    for (let i = 0; i < 100 && players.length < 2; i++) {
-      players = await web("lobby.players");
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    expect(Object.fromEntries(players.map((p) => [p.handle, p.owner?.login]))).toEqual({ "web-claude": "alice", "api-codex": "bob" });
+  it("asks you to sign in before creating a lobby or accepting an invite", async () => {
+    const daemon = await startDaemon();
+    await expect(daemon.call("lobby.create", { name: "x" })).rejects.toMatchObject({ code: "login_required" });
+    await expect(daemon.call("invite.accept", { invite: "https://relay/invite/abcdefghijklmnopqrstuvwxyz" })).rejects.toMatchObject({ code: "login_required" });
   });
 
   it("refreshes an unreadable account token with the machine key", async () => {
@@ -66,8 +43,7 @@ describe("accounts", () => {
     db.close();
 
     daemon = await startDaemon(home);
-    const web = await session(daemon, "claude-code");
-    expect(await web("lobby.create", { handle: "web" })).toHaveProperty("code");
+    expect(await daemon.call("lobby.create", { name: "after-refresh" })).toHaveProperty("lobbyId");
   });
 
   it("signs out", async () => {
@@ -75,7 +51,6 @@ describe("accounts", () => {
     await daemon.call("account.login", { githubToken: "gho_fake_leaver" });
     await daemon.call("account.logout", {});
     expect(await daemon.call("account.status", {})).toBeNull();
-    const web = await session(daemon, "claude-code");
-    await expect(web("lobby.create", { handle: "web" })).rejects.toMatchObject({ code: "login_required" });
+    await expect(daemon.call("lobby.create", { name: "x" })).rejects.toMatchObject({ code: "login_required" });
   });
 });

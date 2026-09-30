@@ -11,7 +11,7 @@ afterAll(async () => {
 describe("installed from the npm tarball", () => {
   it("prints help with every command", async () => {
     const help = await new Machine().cli(tmpdir(), "--help");
-    for (const cmd of ["install", "create", "join", "approve", "doctor", "mcp"]) expect(help).toContain(cmd);
+    for (const cmd of ["install", "login", "create", "invite", "accept", "dashboard", "doctor", "mcp"]) expect(help).toContain(cmd);
   });
 });
 
@@ -22,16 +22,16 @@ describe("two machines, two agents", () => {
     expect(await laptop.login("laptop-owner")).toContain("Signed in as @laptop-owner");
     await server.login("server-owner");
 
-    const created = await laptop.cli(laptop.home, "create", "--name", "food-app", "--handle", "prithvi");
-    const code = created.match(/[2-9]-[a-z]+-[a-z]+/)![0];
+    const lobbyId = await laptop.createLobby("food-app");
+    const link = (await laptop.cli(laptop.home, "invite")).match(/https?:\/\/\S+\/invite\/[\w-]+/)![0];
+    expect(await server.cli(server.home, "accept", link)).toContain("Joined food-app");
 
     const web = await laptop.agent("claude-code");
-    expect(await web.tool("lobby_join", { code, handle: "web-claude", owns: ["web"] })).toContain("approve");
-    await laptop.approveAll();
+    await laptop.addAgent(lobbyId, web, "web-claude", ["web"]);
+    expect(await web.tool("lobby_status")).toContain("You were added to lobby food-app by @laptop-owner");
 
     const api = await server.agent("codex");
-    await api.tool("lobby_join", { code, handle: "api-codex", owns: ["api"] });
-    await server.approveAll();
+    await server.addAgent(lobbyId, api, "api-codex", ["api"]);
 
     expect(await web.until("lobby_players", "api-codex (codex) · @server-owner active")).toContain("owns: api");
     expect(await web.tool("lobby_ask", { to: "owner:api", question: "What field holds the delivery ETA?" })).toContain("Sent question");
@@ -62,7 +62,7 @@ describe("two machines, two agents", () => {
   it("keeps working when the daemon restarts under a running agent", async () => {
     const laptop = new Machine();
     await laptop.login("restarter");
-    await laptop.cli(laptop.home, "create", "--handle", "prithvi");
+    await laptop.createLobby("restart-check");
     const web = await laptop.agent("claude-code");
     expect(await web.tool("lobby_status")).toContain("not in a lobby");
 

@@ -64,22 +64,44 @@ export interface Seat {
   profile: JoinProfile;
 }
 
-export async function createLobby(handle = "host", owner?: Account): Promise<Seat & { code: string }> {
-  const a = await newAgent(handle);
+export type Lobby = Seat & { account: Account };
+
+/** Creates a lobby as `owner` (a fresh user by default); the returned seat is the owner's person seat. */
+export async function createLobby(handle = "host", owner?: Account): Promise<Lobby> {
+  const a = await newAgent(handle, "cli");
   const account = owner ?? (await signIn(`owner-${handle}`));
   const res = await postJson("/v1/lobbies", { host: a.profile }, randomIp(), account.token);
   if (res.status !== 201) throw new Error(`create failed: ${res.status} ${await res.text()}`);
-  const body = await res.json<{ lobbyId: string; agentId: string; token: string; code: string }>();
+  const body = await res.json<{ lobbyId: string; agentId: string; token: string }>();
+  return { ...body, keys: a.keys, profile: a.profile, account };
+}
+
+/** `owner` places one of their agents into the lobby (they must be a member). */
+export async function addAgent(lobbyId: string, handle: string, owner: Account): Promise<Seat> {
+  const a = await newAgent(handle);
+  const res = await postJson(`/v1/lobbies/${lobbyId}/agents`, { agent: a.profile }, randomIp(), owner.token);
+  if (res.status !== 201) throw new Error(`add failed: ${res.status} ${await res.text()}`);
+  const body = await res.json<{ lobbyId: string; agentId: string; token: string }>();
   return { ...body, keys: a.keys, profile: a.profile };
 }
 
-export async function joinLobby(code: string, handle: string, owner?: Account): Promise<Seat> {
-  const a = await newAgent(handle);
-  const account = owner ?? (await signIn(`owner-${handle}`));
-  const res = await postJson("/v1/join", { code, agent: a.profile }, randomIp(), account.token);
-  if (res.status !== 200) throw new Error(`join failed: ${res.status} ${await res.text()}`);
-  const body = await res.json<{ lobbyId: string; agentId: string; token: string }>();
-  return { ...body, keys: a.keys, profile: a.profile };
+export async function createInvite(lobby: Lobby, options: Record<string, unknown> = {}): Promise<{ token: string; url: string }> {
+  const res = await postJson(`/v1/lobbies/${lobby.lobbyId}/invites`, options, randomIp(), lobby.account.token);
+  if (res.status !== 201) throw new Error(`invite failed: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+export function acceptInvite(token: string, person: Account, handle: string): Promise<Response> {
+  return newAgent(handle, "cli").then((a) => postJson("/v1/invites/accept", { token, person: a.profile }, randomIp(), person.token));
+}
+
+/** Invites `person` into `lobby` and returns their account, now a member. */
+export async function member(lobby: Lobby, login: string): Promise<Account> {
+  const account = await signIn(login);
+  const { token } = await createInvite(lobby);
+  const res = await acceptInvite(token, account, login);
+  if (res.status !== 200) throw new Error(`accept failed: ${res.status} ${await res.text()}`);
+  return account;
 }
 
 /** A WebSocket to the relay that records every frame it receives. */
@@ -133,7 +155,7 @@ export class TestSocket {
 
   /** Sends hello and waits until replay is finished (the last events page). */
   async hello(afterSeq = 0) {
-    this.send({ t: "hello", v: 1, afterSeq, clientVersion: "0.2.0" });
+    this.send({ t: "hello", v: 1, afterSeq, clientVersion: "0.3.0" });
     await this.next("events", (f) => !f.more);
     return this.frames.find((f) => f.t === "welcome") as Extract<ServerFrame, { t: "welcome" }>;
   }

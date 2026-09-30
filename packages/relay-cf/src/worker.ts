@@ -1,26 +1,26 @@
 import {
-  JoinProfile, LobbyCode, LobbySettings, ProtocolError, RATES, TIMINGS, fromB64u, httpStatusOf, refreshSigningBytes, verifyBytes, webCrypto,
+  JoinProfile, LobbySettings, ProtocolError, RATES, TIMINGS, fromB64u, httpStatusOf, refreshSigningBytes, toB64u, verifyBytes, webCrypto,
   type ErrorCode, type Owner,
 } from "@agentlobbies/protocol";
 import { ulid } from "ulid";
 import { z } from "zod";
 import { issueAccountJwt, issueJwt, tokenFromSubprotocol, verifyAccountJwt, verifyJwt, type Claims } from "./auth";
-import { insertCode } from "./codes";
 
 export { LobbyDurableObject } from "./lobby-do";
 
 const MAX_BODY_BYTES = 160 * 1024;
 
 const CreateLobbyBody = z.object({ host: JoinProfile, settings: LobbySettings.partial().optional() });
-const JoinBody = z.object({ code: LobbyCode, agent: JoinProfile });
+const AddAgentBody = z.object({ agent: JoinProfile });
+const AcceptInviteBody = z.object({ token: z.string().min(20).max(64), person: JoinProfile });
+const InviteBody = z.object({
+  role: z.enum(["member", "viewer"]).default("member"),
+  ttlMs: z.number().int().positive().max(30 * 24 * 60 * 60_000).default(7 * 24 * 60 * 60_000),
+  maxUses: z.number().int().positive().optional(),
+});
 const RefreshBody = z.object({ agentId: z.string(), ts: z.number().int(), sig: z.string() });
 const GitHubSignInBody = z.object({ githubToken: z.string().min(1), machinePublicKey: z.string(), machineName: z.string().max(100) });
 const AccountRefreshBody = z.object({ machineId: z.string(), ts: z.number().int(), sig: z.string() });
-const MintCodeBody = z.object({
-  role: z.enum(["member", "observer"]).default("member"),
-  ttlMs: z.number().int().positive().max(TIMINGS.codeTtlMsMax).default(TIMINGS.codeTtlMsDefault),
-  maxUses: z.number().int().positive().optional(),
-});
 
 type Handler = (req: Request, env: Env, params: Record<string, string | undefined>) => Promise<Response>;
 
@@ -30,9 +30,11 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
   ["POST", new URLPattern({ pathname: "/v1/auth/refresh" }), refreshAccount],
   ["POST", new URLPattern({ pathname: "/v1/auth/logout" }), logout],
   ["POST", new URLPattern({ pathname: "/v1/lobbies" }), createLobby],
-  ["POST", new URLPattern({ pathname: "/v1/join" }), joinLobby],
+  ["POST", new URLPattern({ pathname: "/v1/invites/accept" }), acceptInvite],
+  ["POST", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/invites" }), createInvite],
+  ["POST", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/agents" }), addAgent],
+  ["DELETE", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/agents/:agentId" }), removeAgent],
   ["GET", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/ws" }), upgrade],
-  ["POST", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/codes" }), mintCode],
   ["POST", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/token" }), refreshToken],
 ];
 
@@ -51,8 +53,7 @@ export default {
   },
 
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
-    // Keep a one-minute grace period so a code never disappears mid-join (LLD 4.6).
-    await env.DB.prepare("DELETE FROM lobby_codes WHERE expires_at < ?").bind(Date.now() - 60_000).run();
+    await env.DB.prepare("DELETE FROM invites WHERE expires_at < ?").bind(Date.now()).run();
   },
 } satisfies ExportedHandler<Env>;
 
@@ -135,38 +136,13 @@ async function createLobby(req: Request, env: Env): Promise<Response> {
     .bind(lobbyId, body.settings?.name ?? null, now, ipHash).run();
   await env.LOBBY.get(id).init({ lobbyId, host: { ...body.host, agentId, owner: ownerOf(owner) }, settings: body.settings ?? {} });
 
-  const code = await insertCode(env.DB, lobbyId, { role: "member", expiresAt: now + TIMINGS.codeTtlMsDefault });
-  await env.DB.prepare("UPDATE lobbies SET status = 'open' WHERE lobby_id = ?").bind(lobbyId).run();
+  await env.DB.batch([
+    env.DB.prepare("INSERT INTO lobby_members (lobby_id, user_id, role, added_at) VALUES (?, ?, 'owner', ?)").bind(lobbyId, owner.userId, now),
+    env.DB.prepare("UPDATE lobbies SET status = 'open' WHERE lobby_id = ?").bind(lobbyId),
+  ]);
 
   const token = await issueJwt(env, { sub: agentId, lobby: lobbyId, role: "host" });
-  return Response.json(
-    { lobbyId, agentId, role: "host", code, codeExpiresAt: now + TIMINGS.codeTtlMsDefault, token, wsUrl: wsUrl(env, lobbyId) },
-    { status: 201 },
-  );
-}
-
-async function joinLobby(req: Request, env: Env): Promise<Response> {
-  const ip = req.headers.get("cf-connecting-ip") ?? "unknown";
-  if (!(await env.CODE_LIMITER.limit({ key: ip })).success) throw new ProtocolError("rate_limited");
-  const owner = await requireAccount(req, env);
-  const { code, agent } = await parseBody(req, JoinBody);
-
-  // Atomic redeem: checks expiry and uses, and counts the use, in one statement.
-  const row = await env.DB.prepare(
-    `UPDATE lobby_codes SET uses = uses + 1
-     WHERE code = ? AND expires_at > ? AND (max_uses IS NULL OR uses < max_uses)
-     RETURNING lobby_id, role`,
-  ).bind(code, Date.now()).first<{ lobby_id: string; role: "member" | "observer" }>();
-  if (!row) throw new ProtocolError("invalid_code");
-
-  const agentId = ulid();
-  const result = await env.LOBBY.get(env.LOBBY.idFromString(row.lobby_id)).admit({ ...agent, agentId, owner: ownerOf(owner) }, row.role);
-  if ("error" in result) throw new ProtocolError(result.error);
-
-  const token = await issueJwt(env, { sub: agentId, lobby: row.lobby_id, role: row.role });
-  return Response.json({
-    lobbyId: row.lobby_id, agentId, role: row.role, handle: result.handle, token, wsUrl: wsUrl(env, row.lobby_id),
-  });
+  return Response.json({ lobbyId, agentId, role: "host", token, wsUrl: wsUrl(env, lobbyId) }, { status: 201 });
 }
 
 async function refreshToken(req: Request, env: Env, params: Record<string, string | undefined>): Promise<Response> {
@@ -178,12 +154,79 @@ async function refreshToken(req: Request, env: Env, params: Record<string, strin
   return Response.json({ token });
 }
 
-async function mintCode(req: Request, env: Env, params: Record<string, string | undefined>): Promise<Response> {
-  const claims = await requireToken(req, env, params.lobbyId);
-  const body = await parseBody(req, MintCodeBody);
-  const result = await lobbyStub(env, claims.lobby).mintCode(claims.sub, body);
+const MemberRole = { member: "member", viewer: "observer" } as const;
+
+/** Lobby membership of the signed-in user, or undefined if they aren't a member. */
+async function membership(env: Env, lobbyId: string | undefined, userId: string): Promise<"owner" | "member" | "viewer" | undefined> {
+  if (!lobbyId) return undefined;
+  const row = await env.DB.prepare("SELECT role FROM lobby_members WHERE lobby_id = ? AND user_id = ?").bind(lobbyId, userId)
+    .first<{ role: "owner" | "member" | "viewer" }>();
+  return row?.role;
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** The lobby owner makes a link that lets whoever opens it (after signing in) become a member or viewer. */
+async function createInvite(req: Request, env: Env, params: Record<string, string | undefined>): Promise<Response> {
+  const account = await requireAccount(req, env);
+  if ((await membership(env, params.lobbyId, account.userId)) !== "owner") throw new ProtocolError("forbidden", "only the lobby owner can invite");
+  const body = await parseBody(req, InviteBody);
+  const token = toB64u(crypto.getRandomValues(new Uint8Array(24)));
+  const expiresAt = Date.now() + body.ttlMs;
+  await env.DB.prepare("INSERT INTO invites (token_hash, lobby_id, role, created_by, expires_at, max_uses) VALUES (?, ?, ?, ?, ?, ?)")
+    .bind(await sha256Hex(token), params.lobbyId, body.role, account.userId, expiresAt, body.maxUses ?? null).run();
+  return Response.json({ token, url: `${env.PUBLIC_URL}/invite/${token}`, expiresAt, role: body.role }, { status: 201 });
+}
+
+async function acceptInvite(req: Request, env: Env): Promise<Response> {
+  const ip = req.headers.get("cf-connecting-ip") ?? "unknown";
+  if (!(await env.CODE_LIMITER.limit({ key: ip })).success) throw new ProtocolError("rate_limited");
+  const account = await requireAccount(req, env);
+  const { token, person } = await parseBody(req, AcceptInviteBody);
+
+  const invite = await env.DB.prepare(
+    `UPDATE invites SET uses = uses + 1
+     WHERE token_hash = ? AND expires_at > ? AND (max_uses IS NULL OR uses < max_uses)
+     RETURNING lobby_id, role`,
+  ).bind(await sha256Hex(token), Date.now()).first<{ lobby_id: string; role: "member" | "viewer" }>();
+  if (!invite) throw new ProtocolError("invalid_code", "that invite is invalid, expired, or used up");
+
+  await env.DB.prepare("INSERT OR IGNORE INTO lobby_members (lobby_id, user_id, role, added_at) VALUES (?, ?, ?, ?)")
+    .bind(invite.lobby_id, account.userId, invite.role, Date.now()).run();
+  const lobby = await env.DB.prepare("SELECT name FROM lobbies WHERE lobby_id = ?").bind(invite.lobby_id).first<{ name: string | null }>();
+  return admitToLobby(env, invite.lobby_id, person, account, MemberRole[invite.role], 200, { name: lobby?.name ?? null });
+}
+
+/** A member places one of their own agents into the lobby (LLD 14.5). */
+async function addAgent(req: Request, env: Env, params: Record<string, string | undefined>): Promise<Response> {
+  const account = await requireAccount(req, env);
+  const role = await membership(env, params.lobbyId, account.userId);
+  if (role !== "owner" && role !== "member") throw new ProtocolError("forbidden", "only lobby members can add agents");
+  const { agent } = await parseBody(req, AddAgentBody);
+  return admitToLobby(env, params.lobbyId!, agent, account, "member", 201);
+}
+
+async function removeAgent(req: Request, env: Env, params: Record<string, string | undefined>): Promise<Response> {
+  const account = await requireAccount(req, env);
+  const role = await membership(env, params.lobbyId, account.userId);
+  if (!role) throw new ProtocolError("forbidden");
+  const result = await lobbyStub(env, params.lobbyId!).removeAgent(params.agentId ?? "", { userId: account.userId, isLobbyOwner: role === "owner" });
   if ("error" in result) throw new ProtocolError(result.error);
-  return Response.json(result, { status: 201 });
+  return Response.json({});
+}
+
+async function admitToLobby(
+  env: Env, lobbyId: string, profile: z.infer<typeof JoinProfile>, account: Owner & { userId: string }, role: "member" | "observer",
+  status = 200, extra: Record<string, unknown> = {},
+): Promise<Response> {
+  const agentId = ulid();
+  const result = await lobbyStub(env, lobbyId).admit({ ...profile, agentId, owner: ownerOf(account) }, role);
+  if ("error" in result) throw new ProtocolError(result.error);
+  const token = await issueJwt(env, { sub: agentId, lobby: lobbyId, role });
+  return Response.json({ lobbyId, agentId, role, handle: result.handle, token, wsUrl: wsUrl(env, lobbyId), ...extra }, { status });
 }
 
 async function upgrade(req: Request, env: Env, params: Record<string, string | undefined>): Promise<Response> {

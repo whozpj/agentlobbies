@@ -6,11 +6,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdirSync, realpathSync } from "node:fs";
 import { hostname } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { ulid } from "ulid";
 import { Connection, type ConnectionState } from "./connection";
 import { startDashboard, type Dashboard } from "./dashboard";
-import { openDb, type Db, type JoinRequest, type Seat } from "./db";
+import { openDb, type Account, type Db, type Seat } from "./db";
 import { findSecret } from "./guard";
 import { loadKey, saveKey } from "./keys";
 import { DaemonError } from "./rpc";
@@ -37,7 +37,7 @@ export interface SurfacedMessage {
   fromClient?: string;
   fromModel?: string;
   fromOwner?: string;
-  type: Envelope["type"];
+  type: Envelope["type"] | "notice";
   to: Recipient;
   body: string;
   inReplyTo?: string;
@@ -53,8 +53,25 @@ function expiresWithinAnHour(jwt: string): boolean {
   }
 }
 
+/** The seat key of the signed-in person (the CLI and dashboard act through it), one seat per lobby. */
+export const PERSON = "person";
+
+const CLIENT_SHORT_NAMES: Record<string, string> = { "claude-code": "claude", "gemini-cli": "gemini", custom: "agent" };
+
+/** A lobby handle from a GitHub login: lowercase letters, digits, and hyphens, at most 32 characters. */
+export function personHandle(login: string): string {
+  return login.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-+/, "").slice(0, 32).padEnd(2, "0");
+}
+
+/** "web" + Claude Code becomes "web-claude". */
+export function defaultHandle(client: string, cwd: string): string {
+  const folder = basename(cwd).toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-+|-+$/g, "") || "agent";
+  return `${folder.slice(0, 20)}-${CLIENT_SHORT_NAMES[client] ?? client}`.slice(0, 32);
+}
+
 /** Same client in the same folder gets the same identity back (LLD 7.1). */
 export function seatKeyFor(client: string, cwd: string): string {
+  if (client === PERSON) return PERSON;
   const input = [client, realpathSync(cwd), process.env.AGENTLOBBIES_SEAT ?? ""].join("\0");
   return createHash("sha256").update(input).digest("hex").slice(0, 32);
 }
@@ -76,7 +93,7 @@ export class Daemon extends EventEmitter {
 
   private dashboard: Dashboard | undefined;
 
-  constructor(private readonly opts: { home: string; relayUrl: string; agentJoin?: "confirm" | "allow"; dashboardDir?: string }) {
+  constructor(private readonly opts: { home: string; relayUrl: string; dashboardDir?: string }) {
     super();
   }
 
@@ -140,58 +157,104 @@ export class Daemon extends EventEmitter {
       const sessionId = randomUUID();
       const seatKey = seatKeyFor(client, cwd);
       this.sessions.set(sessionId, { client, cwd, seatKey });
+      if (seatKey !== PERSON) {
+        this.db.upsertLocalAgent(seatKey, client, realpathSync(cwd));
+        this.emit("activity", { type: "agents" });
+      }
       const seat = this.db.activeSeat(seatKey);
       return { sessionId, seatKey, lobby: seat ? { lobbyId: seat.lobby_id, handle: seat.handle } : null };
     },
 
     "session.close": async (p) => {
       this.sessions.delete(String(p.sessionId));
+      this.emit("activity", { type: "agents" });
       return {};
     },
 
     "lobby.create": async (p) => {
-      const session = this.session(p);
+      const account = this.requireAccount();
       const keys = await generateSeatKeys();
-      const profile = this.profile(session, p, toB64u(keys.publicKey));
-      const res = await this.relay<{ lobbyId: string; agentId: string; token: string; code: string; codeExpiresAt: number }>(
-        "/v1/lobbies", { host: profile, settings: p.name ? { name: String(p.name) } : {} }, await this.accountToken(),
+      const name = p.name ? String(p.name) : null;
+      const person = { handle: personHandle(account.login), client: "cli" as const, owns: [], workingOn: "", publicKey: toB64u(keys.publicKey) };
+      const res = await this.relay<{ lobbyId: string; agentId: string; token: string }>(
+        "/v1/lobbies", { host: person, settings: name ? { name } : {} }, await this.accountToken(),
       );
-      this.addSeat(session.seatKey, { lobbyId: res.lobbyId, lobbyName: p.name ? String(p.name) : null, agentId: res.agentId,
-                              handle: profile.handle, role: "host", token: res.token }, keys.secretKey);
-      return { lobbyId: res.lobbyId, code: res.code, codeExpiresAt: res.codeExpiresAt, handle: profile.handle };
+      this.addSeat(PERSON, { lobbyId: res.lobbyId, lobbyName: name, agentId: res.agentId, handle: person.handle, role: "host", token: res.token }, keys.secretKey);
+      this.emit("activity", { type: "lobbies" });
+      return { lobbyId: res.lobbyId, name };
     },
 
-    "lobby.join": async (p) => {
-      const session = this.session(p);
-      const request = { id: ulid(), seat_key: session.seatKey, client: session.client, code: String(p.code ?? ""),
-                        handle: String(p.handle ?? ""), owns: (p.owns as string[] | undefined) ?? [] };
-      // An agent can't let itself into a lobby; its human approves with `agentlobbies approve` (G42).
-      if (p.source === "agent" && (this.opts.agentJoin ?? "confirm") === "confirm") {
-        this.db.addJoinRequest(request);
-        this.emit("activity", { type: "approvals" });
-        this.emit("notify", { method: "approval.pending", params: { scope: "join" } });
-        throw new DaemonError("join_pending", "Ask your user to approve this join with `agentlobbies approve`.");
+    "invite.create": async (p) => {
+      const lobbyId = String(p.lobbyId ?? this.seat(p).lobby_id);
+      return this.relay(`/v1/lobbies/${lobbyId}/invites`, { role: p.role ?? "member", ...(p.maxUses ? { maxUses: Number(p.maxUses) } : {}) },
+                        await this.accountToken());
+    },
+
+    "invite.accept": async (p) => {
+      const account = this.requireAccount();
+      const token = String(p.invite ?? "").trim().split("/").pop() ?? "";
+      const keys = await generateSeatKeys();
+      const person = { handle: personHandle(account.login), client: "cli" as const, owns: [], workingOn: "", publicKey: toB64u(keys.publicKey) };
+      const res = await this.relay<{ lobbyId: string; agentId: string; token: string; role: Seat["role"]; handle: string; name: string | null }>(
+        "/v1/invites/accept", { token, person }, await this.accountToken(),
+      );
+      this.addSeat(PERSON, { lobbyId: res.lobbyId, lobbyName: res.name, agentId: res.agentId, handle: res.handle, role: res.role, token: res.token }, keys.secretKey);
+      this.emit("activity", { type: "lobbies" });
+      return { lobbyId: res.lobbyId, name: res.name, role: res.role };
+    },
+
+    "agents.list": async () => {
+      const online = new Set([...this.sessions.values()].map((s) => s.seatKey));
+      return this.db.localAgents().map((a) => ({
+        seatKey: a.seat_key,
+        client: a.client,
+        folder: basename(a.cwd),
+        cwd: a.cwd,
+        online: online.has(a.seat_key),
+        lobbies: this.db.seatsFor(a.seat_key).map((s) => ({ lobbyId: s.lobby_id, name: s.lobby_name, handle: s.handle, agentId: s.agent_id })),
+      }));
+    },
+
+    /** You put one of your own agents into a lobby; the agent is told on its next turn (LLD 14.5). */
+    "lobby.addAgent": async (p) => {
+      const account = this.requireAccount();
+      const lobbyId = String(p.lobbyId ?? "");
+      const local = this.db.localAgent(String(p.seatKey ?? ""));
+      if (!local) throw new DaemonError("not_found", "that agent hasn't connected on this machine");
+      const you = this.db.activeSeatIn(PERSON, lobbyId);
+      if (!you) throw new DaemonError("not_found", "you aren't in that lobby");
+
+      const keys = await generateSeatKeys();
+      const profile = {
+        handle: p.handle ? String(p.handle) : defaultHandle(local.client, local.cwd),
+        client: local.client as AgentProfile["client"],
+        owns: (p.owns as string[] | undefined) ?? [],
+        workingOn: "",
+        publicKey: toB64u(keys.publicKey),
+      };
+      const res = await this.relay<{ agentId: string; token: string; handle: string }>(
+        `/v1/lobbies/${lobbyId}/agents`, { agent: profile }, await this.accountToken(),
+      );
+      const seat = this.addSeat(local.seat_key, { lobbyId, lobbyName: you.lobby_name, agentId: res.agentId, handle: res.handle, role: "member", token: res.token }, keys.secretKey);
+      this.db.addNotice(seat.seat_id,
+        `You were added to lobby ${you.lobby_name ?? lobbyId.slice(0, 8)} by @${account.login} as ${res.handle}. Call lobby_players to see who's here.`);
+      this.inboxWaiters.get(seat.seat_id)?.({ unread: this.db.unreadCount(seat.seat_id) });
+      this.emit("activity", { type: "agents" });
+      return { agentId: res.agentId, handle: res.handle };
+    },
+
+    "lobby.removeAgent": async (p) => {
+      const lobbyId = String(p.lobbyId ?? "");
+      const agentId = String(p.agentId ?? "");
+      await this.relay(`/v1/lobbies/${lobbyId}/agents/${agentId}`, undefined, await this.accountToken(), "DELETE");
+      const local = this.db.activeSeats().find((s) => s.agent_id === agentId);
+      if (local) {
+        this.db.setSeatState(local.seat_id, "left");
+        this.connections.get(local.seat_id)?.stop();
+        this.connections.delete(local.seat_id);
       }
-      return this.join(request);
-    },
-
-    "lobby.code": async (p) => {
-      const seat = this.seat(p);
-      return this.relay(`/v1/lobbies/${seat.lobby_id}/codes`, {
-        role: p.role ?? "member",
-        ...(p.ttlMs ? { ttlMs: Number(p.ttlMs) } : {}),
-        ...(p.maxUses ? { maxUses: Number(p.maxUses) } : {}),
-      }, seat.jwt);
-    },
-
-    "approval.list": async (p) => (p.scope === "join" ? this.db.joinRequests() : []),
-
-    "approval.decide": async (p) => {
-      const request = this.db.joinRequests().find((r) => r.id === p.id);
-      if (!request) throw new DaemonError("not_found", "no such request");
-      this.db.deleteJoinRequest(request.id);
-      this.emit("activity", { type: "approvals" });
-      return p.approve ? this.join(request) : {};
+      this.emit("activity", { type: "agents" });
+      return {};
     },
 
     "lobby.status": async (p) => {
@@ -215,7 +278,10 @@ export class Daemon extends EventEmitter {
         return [this.surface(seat, this.db.findEvent(seat.seat_id, envelope.id)!)];
       }
       const limit = Math.min(Number(p.limit ?? 10), 25);
-      return this.db.takeUnread(seat.seat_id, limit).map((e) => this.surface(seat, e));
+      const notices: SurfacedMessage[] = this.db.takeNotices(seat.seat_id).map((n) => ({
+        id: `notice-${n.id}`, seq: 0, from: "lobby", fromAgentId: "", type: "notice", to: { kind: "broadcast" }, body: n.body,
+      }));
+      return [...notices, ...this.db.takeUnread(seat.seat_id, limit).map((e) => this.surface(seat, e))];
     },
 
     "inbox.peek": async (p) => ({ unread: this.db.unreadCount(this.seat(p).seat_id) }),
@@ -232,7 +298,8 @@ export class Daemon extends EventEmitter {
         return {
           lobbyId,
           name: seats.find((s) => s.lobby_name)?.lobby_name ?? null,
-          local: seats.map((s) => ({ handle: s.handle, role: s.role })),
+          myRole: seats.find((s) => s.seat_key === PERSON)?.role ?? null,
+          local: seats.filter((s) => s.seat_key !== PERSON).map((s) => ({ handle: s.handle, agentId: s.agent_id, seatKey: s.seat_key })),
           connection: this.connections.get(view.seat_id)?.state ?? "stopped",
           roster: this.db.roster(view.seat_id),
         };
@@ -272,17 +339,6 @@ export class Daemon extends EventEmitter {
     },
   };
 
-
-  private async join(r: Omit<JoinRequest, "id">): Promise<{ lobbyId: string; handle: string; role: string }> {
-    const keys = await generateSeatKeys();
-    const profile = { handle: r.handle, client: r.client as AgentProfile["client"], owns: r.owns, workingOn: "", publicKey: toB64u(keys.publicKey) };
-    const res = await this.relay<{ lobbyId: string; agentId: string; token: string; role: "member" | "observer"; handle: string }>(
-      "/v1/join", { code: r.code, agent: profile }, await this.accountToken(),
-    );
-    this.addSeat(r.seat_key, { lobbyId: res.lobbyId, lobbyName: null, agentId: res.agentId, handle: res.handle,
-                               role: res.role, token: res.token }, keys.secretKey);
-    return { lobbyId: res.lobbyId, handle: res.handle, role: res.role };
-  }
 
   private async sendMessage(seat: Seat, p: Params): Promise<{ id: string; seq?: number; held?: boolean; queued?: boolean }> {
     const body = String(p.body ?? "");
@@ -490,7 +546,7 @@ export class Daemon extends EventEmitter {
 
   /** Hosts see every message, so a local host seat gives the fullest view of a lobby. */
   private viewSeat(seats: Seat[]): Seat {
-    return seats.find((s) => s.role === "host") ?? seats[0]!;
+    return seats.find((s) => s.seat_key === PERSON) ?? seats[0]!;
   }
 
   private dashboardMessage(view: Seat, e: LobbyEvent) {
@@ -523,21 +579,22 @@ export class Daemon extends EventEmitter {
     };
   }
 
-  private addSeat(seatKey: string, s: { lobbyId: string; lobbyName: string | null; agentId: string; handle: string; role: Seat["role"]; token: string }, secretKey: Uint8Array): void {
+  private addSeat(seatKey: string, s: { lobbyId: string; lobbyName: string | null; agentId: string; handle: string; role: Seat["role"]; token: string }, secretKey: Uint8Array): Seat {
     const seatId = ulid();
     saveKey(this.opts.home, seatId, secretKey);
     this.db.insertSeat({
       seat_id: seatId, seat_key: seatKey, lobby_id: s.lobbyId, lobby_name: s.lobbyName, agent_id: s.agentId,
       handle: s.handle, role: s.role, relay_url: this.opts.relayUrl, jwt: s.token,
     }, Date.now());
-    this.connect(this.db.activeSeat(seatKey)!);
+    const seat = this.db.activeSeatIn(seatKey, s.lobbyId)!;
+    this.connect(seat);
+    return seat;
   }
 
-  private profile(session: Session, p: Params, publicKey: string): Pick<AgentProfile, "handle" | "client" | "owns" | "publicKey"> & { workingOn: string } {
-    return {
-      handle: String(p.handle ?? ""), client: session.client as AgentProfile["client"],
-      owns: (p.owns as string[] | undefined) ?? [], workingOn: "", publicKey,
-    };
+  private requireAccount(): Account {
+    const account = this.db.account();
+    if (!account) throw new DaemonError("login_required", "Sign in first with `agentlobbies login`.");
+    return account;
   }
 
   private session(p: Params): Session {
@@ -547,20 +604,21 @@ export class Daemon extends EventEmitter {
   }
 
   private seat(p: Params): Seat {
-    const seat = this.db.activeSeat(this.session(p).seatKey);
-    if (!seat) throw new DaemonError("no_seat", "You are not in a lobby. Ask the user for a lobby code, then join it.");
+    const { seatKey } = this.session(p);
+    const seat = p.lobbyId ? this.db.activeSeatIn(seatKey, String(p.lobbyId)) : this.db.activeSeat(seatKey);
+    if (!seat) throw new DaemonError("no_seat", "You are not in a lobby yet. Your user can add you from the dashboard (`agentlobbies dashboard`).");
     return seat;
   }
 
-  private async relay<T>(path: string, body: unknown, token?: string): Promise<T> {
+  private async relay<T>(path: string, body: unknown, token?: string, method = "POST"): Promise<T> {
     const res = await fetch(this.opts.relayUrl + path, {
-      method: "POST",
+      method,
       headers: {
         "content-type": "application/json",
         "X-Agentlobbies-Client": CLIENT_VERSION,
         ...(token ? { authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify(body),
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     const json = (await res.json()) as T & { error?: { code: string; message: string } };
     if (!res.ok) throw new DaemonError(json.error?.code ?? "relay_error", json.error?.message ?? `relay returned ${res.status}`);

@@ -4,26 +4,37 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, inject, it } from "vitest";
 import { Daemon } from "../src/daemon";
+import { agentSession } from "./lobby-helpers";
 
 const relayUrl = inject("relayUrl");
 const running: Daemon[] = [];
 afterEach(async () => { for (const d of running.splice(0)) await d.stop(); });
 
-async function setup(agentJoin: "allow" | "confirm" = "allow") {
+async function setup() {
   const staticDir = mkdtempSync(join(tmpdir(), "al-static-"));
   mkdirSync(join(staticDir, "assets"));
   writeFileSync(join(staticDir, "index.html"), "<html>dashboard</html>");
   writeFileSync(join(staticDir, "assets", "app.js"), "console.log(1)");
-  const daemon = new Daemon({ home: mkdtempSync(join(tmpdir(), "al-home-")), relayUrl, agentJoin, dashboardDir: staticDir });
+  const daemon = new Daemon({ home: mkdtempSync(join(tmpdir(), "al-home-")), relayUrl, dashboardDir: staticDir });
   await daemon.start();
   running.push(daemon);
   await daemon.call("account.login", { githubToken: "gho_fake_tester" });
-  const { sessionId } = await daemon.call("session.open", { client: "cli", cwd: mkdtempSync(join(tmpdir(), "host-")) });
+  const { sessionId } = await daemon.call("session.open", { client: "person", cwd: tmpdir() });
   const host = (method: string, params: Record<string, unknown> = {}) => daemon.call(method, { sessionId, ...params });
-  const { code } = await host("lobby.create", { handle: "prithvi", name: "food-app" });
+  await daemon.call("lobby.create", { name: "food-app" });
   const { url } = await daemon.call("dashboard.start", {});
   const base = new URL(url);
-  return { daemon, host, code, base, token: base.searchParams.get("token")! };
+  return { daemon, host, base, token: base.searchParams.get("token")! };
+}
+
+function send(base: URL, method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
+  return new Promise((resolve, reject) => {
+    request({ host: "127.0.0.1", port: base.port, method, path, headers: { "content-type": "application/json" } }, (res) => {
+      let data = "";
+      res.on("data", (d) => (data += d));
+      res.on("end", () => resolve({ status: res.statusCode!, body: data ? JSON.parse(data) : undefined }));
+    }).on("error", reject).end(body === undefined ? undefined : JSON.stringify(body));
+  });
 }
 
 function get(base: URL, path: string, headers: Record<string, string> = {}): Promise<{ status: number; body: string; type?: string }> {
@@ -78,18 +89,28 @@ describe("dashboard server", () => {
     expect(JSON.parse((await firstMessage).slice(5)).message.body).toBe("hello dashboard");
   });
 
-  it("approves a pending join over POST", async () => {
-    const { daemon, base, token, code } = await setup("confirm");
-    const { sessionId } = await daemon.call("session.open", { client: "claude-code", cwd: mkdtempSync(join(tmpdir(), "web-")) });
-    await daemon.call("lobby.join", { sessionId, code, handle: "web-claude", owns: ["web"], source: "agent" }).catch(() => {});
-    const [pending] = JSON.parse((await get(base, `/api/approvals?token=${token}`)).body);
-    const res = await new Promise<number>((resolve) => {
-      request({ host: "127.0.0.1", port: base.port, method: "POST", path: `/api/approvals/${pending.id}?token=${token}`,
-                headers: { "content-type": "application/json" } }, (r) => { r.resume(); resolve(r.statusCode!); })
-        .end(JSON.stringify({ approve: true }));
-    });
-    expect(res).toBe(200);
-    expect(await daemon.call("lobby.status", { sessionId })).toMatchObject({ handle: "web-claude" });
+  it("creates a lobby, invites, and adds and removes your agent", async () => {
+    const { daemon, base, token } = await setup();
+    const agent = await agentSession(daemon, "claude-code", "web");
+    const q = `?token=${token}`;
+
+    expect((await send(base, "GET", `/api/me${q}`)).body).toMatchObject({ login: "tester" });
+    const created = await send(base, "POST", `/api/lobbies${q}`, { name: "checkout" });
+    expect(created.status).toBe(200);
+    const lobbyId = created.body.lobbyId;
+
+    const invite = await send(base, "POST", `/api/lobbies/${lobbyId}/invites${q}`, { role: "member" });
+    expect(invite.body.url).toContain("/invite/");
+
+    const agents = (await send(base, "GET", `/api/agents${q}`)).body;
+    expect(agents).toContainEqual(expect.objectContaining({ seatKey: agent.seatKey, folder: "web", online: true }));
+
+    const added = await send(base, "POST", `/api/lobbies/${lobbyId}/agents${q}`, { seatKey: agent.seatKey, owns: ["web"] });
+    expect(added.body).toMatchObject({ handle: "web-claude" });
+    expect(await agent.call("lobby.status")).toMatchObject({ handle: "web-claude" });
+
+    expect((await send(base, "DELETE", `/api/lobbies/${lobbyId}/agents/${added.body.agentId}${q}`)).status).toBe(200);
+    await expect(agent.call("lobby.status")).rejects.toMatchObject({ code: "no_seat" });
   });
 
   it("serves the app, with index.html for client-side routes", async () => {

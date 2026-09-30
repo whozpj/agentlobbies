@@ -13,9 +13,24 @@ export interface Agent {
 export interface Lobby {
   lobbyId: string;
   name: string | null;
-  local: { handle: string; role: string }[];
+  myRole: "host" | "member" | "observer" | null;
+  local: { handle: string; agentId: string; seatKey: string }[];
   connection: string;
   roster: Agent[];
+}
+
+export interface MyAgent {
+  seatKey: string;
+  client: string;
+  folder: string;
+  cwd: string;
+  online: boolean;
+  lobbies: { lobbyId: string; name: string | null; handle: string; agentId: string }[];
+}
+
+export interface Me {
+  login: string;
+  avatarUrl: string;
 }
 
 export interface Message {
@@ -29,34 +44,35 @@ export interface Message {
   committedAt: number;
 }
 
-export interface JoinRequest {
-  id: string;
-  client: string;
-  handle: string;
-  code: string;
-  owns: string[];
-}
-
 export type Activity =
   | { type: "message"; lobbyId: string; message: Message }
   | { type: "roster"; lobbyId: string }
   | { type: "connection"; lobbyId: string; state: string }
-  | { type: "approvals" };
+  | { type: "agents" }
+  | { type: "lobbies" };
 
 const token = new URLSearchParams(location.search).get("token") ?? "";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${path}?token=${token}`, init);
-  if (!res.ok) throw new Error(`${path} returned ${res.status}`);
-  return res.json() as Promise<T>;
+  const body = await res.json();
+  if (!res.ok) throw new Error(body?.error?.message ?? `${path} returned ${res.status}`);
+  return body as T;
 }
 
+const post = <T>(path: string, body: unknown) =>
+  request<T>(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
 export const api = {
+  me: () => request<Me | null>("/api/me"),
   lobbies: () => request<Lobby[]>("/api/lobbies"),
+  agents: () => request<MyAgent[]>("/api/agents"),
   messages: (lobbyId: string) => request<Message[]>(`/api/lobbies/${lobbyId}/messages`),
-  approvals: () => request<JoinRequest[]>("/api/approvals"),
-  decide: (id: string, approve: boolean) =>
-    request(`/api/approvals/${id}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ approve }) }),
+  createLobby: (name: string) => post<{ lobbyId: string }>("/api/lobbies", { name }),
+  invite: (lobbyId: string, role: "member" | "viewer") => post<{ url: string; expiresAt: number }>(`/api/lobbies/${lobbyId}/invites`, { role }),
+  acceptInvite: (invite: string) => post<{ lobbyId: string }>("/api/invites/accept", { invite }),
+  addAgent: (lobbyId: string, seatKey: string, owns: string[]) => post<{ handle: string }>(`/api/lobbies/${lobbyId}/agents`, { seatKey, owns }),
+  removeAgent: (lobbyId: string, agentId: string) => request(`/api/lobbies/${lobbyId}/agents/${agentId}`, { method: "DELETE" }),
   subscribe(onActivity: (activity: Activity) => void): () => void {
     const events = new EventSource(`/api/events?token=${token}`);
     events.onmessage = (e) => onActivity(JSON.parse(e.data) as Activity);

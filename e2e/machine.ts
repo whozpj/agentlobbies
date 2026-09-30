@@ -49,6 +49,37 @@ export class Machine {
     return stdout;
   }
 
+  /** Calls this machine's daemon over its local socket, as the dashboard does. */
+  rpc<T = any>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const socket = createConnection(join(this.home, "daemon.sock"));
+      let buffer = "";
+      socket.on("connect", () => socket.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) + "\n"));
+      socket.on("data", (d) => {
+        buffer += d;
+        if (!buffer.includes("\n")) return;
+        const reply = JSON.parse(buffer.slice(0, buffer.indexOf("\n")));
+        socket.end();
+        reply.error ? reject(new Error(reply.error.message)) : resolve(reply.result);
+      });
+      socket.on("error", reject);
+    });
+  }
+
+  /** Creates a lobby from the CLI and returns its id. */
+  async createLobby(name: string): Promise<string> {
+    await this.cli(this.home, "create", name);
+    const lobbies = await this.rpc<{ lobbyId: string; name: string }[]>("dashboard.lobbies");
+    return lobbies.find((l) => l.name === name)!.lobbyId;
+  }
+
+  /** The user adds one of this machine's running agents to a lobby. */
+  async addAgent(lobbyId: string, agent: Agent, handle: string, owns: string[] = []): Promise<void> {
+    const agents = await this.rpc<{ seatKey: string; cwd: string }[]>("agents.list");
+    const { seatKey } = agents.find((a) => a.cwd.endsWith(agent.cwd.split("/").pop()!))!;
+    await this.rpc("lobby.addAgent", { lobbyId, seatKey, handle, owns });
+  }
+
   /** Signs in through the real CLI device flow, as GitHub user `login` on the fake GitHub. */
   async login(login: string): Promise<string> {
     return this.cliWith({ AGENTLOBBIES_GITHUB_CLIENT_ID: `test-${login}` }, this.home, "login", "--no-open");

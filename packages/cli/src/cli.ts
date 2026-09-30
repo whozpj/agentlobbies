@@ -4,7 +4,6 @@ import { runStdioServer } from "@agentlobbies/mcp-server";
 import { defineCommand, runMain } from "citty";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
-import { createInterface } from "node:readline/promises";
 import pc from "picocolors";
 import { CLIENTS, detectClients, hookCommand, mcpCommand } from "./install";
 import { githubDeviceLogin } from "./login";
@@ -16,14 +15,14 @@ const EXIT_CODES: Record<string, number> = { rate_limited: 3, invalid_code: 4, l
 
 const MESSAGES: Record<string, string> = {
   login_required: "Sign in first: run `agentlobbies login`.",
-  no_seat: "You are not in a lobby in this folder. Run `agentlobbies create` or `agentlobbies join <code>`.",
-  invalid_code: "That code is invalid or expired. Ask the host for a new one.",
-  forbidden: "Only the lobby host can do that.",
+  no_seat: "You aren't in a lobby yet. Run `agentlobbies create`, or `agentlobbies accept <invite link>`.",
+  invalid_code: "That invite is invalid or expired. Ask the lobby owner for a new one.",
+  forbidden: "Only the lobby owner can do that.",
 };
 
 /** Runs `fn` with a daemon session for the CLI seat of the current folder. */
 async function withLobby(fn: (call: Call) => Promise<void>): Promise<void> {
-  const session = await openSession({ client: "cli", cwd: process.cwd() });
+  const session = await openSession({ client: "person", cwd: process.cwd() });
   try {
     await fn((method, params) => session.call(method, params));
   } catch (e) {
@@ -49,13 +48,6 @@ async function signIn(call: Call, openBrowser: boolean): Promise<void> {
   console.log(`${pc.green("✓")} Signed in as @${login}`);
 }
 
-function parseTtl(ttl: string | undefined): number | undefined {
-  const match = ttl?.match(/^(\d+)(m|h)$/);
-  if (!match) return undefined;
-  return Number(match[1]) * (match[2] === "h" ? 3_600_000 : 60_000);
-}
-
-const time = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
 const login = defineCommand({
   meta: { description: "Sign in with GitHub so your agents show as yours" },
@@ -72,49 +64,36 @@ const logout = defineCommand({
 });
 
 const create = defineCommand({
-  meta: { description: "Create a lobby and become its host" },
-  args: {
-    name: { type: "string", description: "Lobby name" },
-    handle: { type: "string", description: "Your handle in the lobby", default: "host" },
-  },
+  meta: { description: "Create a lobby that you own" },
+  args: { name: { type: "positional", required: false, description: "Lobby name" } },
   run: ({ args }) => withLobby(async (call) => {
-    const r = await call("lobby.create", { name: args.name, handle: args.handle });
-    console.log(`Lobby created. Share this code: ${pc.bold(r.code)} (expires ${time(r.codeExpiresAt)})\n`);
+    const r = await call("lobby.create", { name: args.name });
+    console.log(`${pc.green("✓")} Created ${pc.bold(r.name ?? r.lobbyId.slice(0, 8))}\n`);
     console.log("Next:");
-    console.log(`  1. Tell each agent: ${pc.bold(`join lobby ${r.code}`)}`);
-    console.log(`  2. Run ${pc.bold("agentlobbies approve")} on each machine to let them in`);
-    console.log(`  3. Run ${pc.bold("agentlobbies players")} to see who is here`);
+    console.log(`  • Add your agents:  ${pc.bold("agentlobbies dashboard")}`);
+    console.log(`  • Invite people:    ${pc.bold("agentlobbies invite")}`);
   }),
 });
 
-const join = defineCommand({
-  meta: { description: "Join a lobby from this folder" },
+const invite = defineCommand({
+  meta: { description: "Make an invite link for your lobby" },
   args: {
-    code: { type: "positional", description: "Lobby code, like 4-maple-orbit" },
-    handle: { type: "string", description: "Your handle in the lobby", default: "human" },
-    owns: { type: "string", description: "Comma-separated areas you own, like api,auth" },
+    viewer: { type: "boolean", description: "View-only: they can watch but not add agents" },
+    uses: { type: "string", description: "How many people can use it" },
   },
   run: ({ args }) => withLobby(async (call) => {
-    const owns = args.owns ? args.owns.split(",").map((s) => s.trim()).filter(Boolean) : [];
-    const r = await call("lobby.join", { code: args.code, handle: args.handle, owns });
-    console.log(`Joined as ${pc.bold(r.handle)} (${r.role}).`);
+    const r = await call("invite.create", { role: args.viewer ? "viewer" : "member", maxUses: args.uses ? Number(args.uses) : undefined });
+    console.log(`Share this link: ${pc.bold(r.url)}`);
+    console.log(pc.dim(`They run: agentlobbies accept <link>  (expires ${new Date(r.expiresAt).toLocaleDateString()})`));
   }),
 });
 
-const code = defineCommand({
-  meta: { description: "Host: mint a new join code" },
-  args: {
-    observer: { type: "boolean", description: "Code joins as an observer" },
-    ttl: { type: "string", description: "How long it lasts, like 30m or 2h" },
-    uses: { type: "string", description: "How many joins it allows" },
-  },
+const accept = defineCommand({
+  meta: { description: "Join a lobby with an invite link" },
+  args: { link: { type: "positional", description: "The invite link" } },
   run: ({ args }) => withLobby(async (call) => {
-    const r = await call("lobby.code", {
-      role: args.observer ? "observer" : "member",
-      ttlMs: parseTtl(args.ttl),
-      maxUses: args.uses ? Number(args.uses) : undefined,
-    });
-    console.log(`Share this code: ${pc.bold(r.code)} (expires ${time(r.expiresAt)})`);
+    const r = await call("invite.accept", { invite: args.link });
+    console.log(`${pc.green("✓")} Joined ${pc.bold(r.name ?? r.lobbyId.slice(0, 8))}. Add your agents with ${pc.bold("agentlobbies dashboard")}.`);
   }),
 });
 
@@ -151,35 +130,6 @@ const inbox = defineCommand({
     const messages: { from: string; type: string; body: string; id: string }[] = await call("inbox.pull", { limit: 25 });
     if (messages.length === 0) console.log(pc.dim("No new messages."));
     for (const m of messages) console.log(`${pc.bold(m.from)} (${m.type}) ${pc.dim(m.id)}\n${m.body}\n`);
-  }),
-});
-
-const approve = defineCommand({
-  meta: { description: "Approve agents that asked to join a lobby" },
-  args: {
-    id: { type: "positional", required: false, description: "Request id to approve (default: ask about each one)" },
-    reject: { type: "boolean", description: "Reject instead of approving" },
-  },
-  run: ({ args }) => withLobby(async (call) => {
-    if (args.id) {
-      await call("approval.decide", { scope: "join", id: args.id, approve: !args.reject });
-      console.log(args.reject ? "Rejected." : "Approved.");
-      return;
-    }
-    const pending: { id: string; client: string; handle: string; code: string }[] = await call("approval.list", { scope: "join" });
-    if (pending.length === 0) return console.log(pc.dim("Nothing waiting for approval."));
-    if (!process.stdin.isTTY) {
-      for (const r of pending) console.log(`${r.id}  ${r.client} wants to join as ${pc.bold(r.handle)} with code ${r.code}`);
-      return console.log(pc.dim("Run `agentlobbies approve <id>` to approve one."));
-    }
-    const prompt = createInterface({ input: process.stdin, output: process.stdout });
-    for (const r of pending) {
-      const answer = await prompt.question(`Let ${r.client} join lobby ${r.code} as ${pc.bold(r.handle)}? [Y/n] `);
-      const yes = !answer.trim().toLowerCase().startsWith("n");
-      await call("approval.decide", { scope: "join", id: r.id, approve: yes });
-      console.log(yes ? pc.green("Approved.") : "Rejected.");
-    }
-    prompt.close();
   }),
 });
 
@@ -270,7 +220,7 @@ const status = defineCommand({
 });
 
 const dashboard = defineCommand({
-  meta: { description: "Open the local web dashboard: agents, live message flow, and approvals" },
+  meta: { description: "Open the dashboard: lobbies, your agents, invites, and the live message flow" },
   args: { open: { type: "boolean", default: true, description: "Open it in your browser" } },
   run: ({ args }) => withLobby(async (call) => {
     const { url } = await call("dashboard.start");
@@ -286,5 +236,5 @@ const mcp = defineCommand({
 
 await runMain(defineCommand({
   meta: { name: "agentlobbies", version: CLIENT_VERSION, description: "Let your coding agents talk to each other" },
-  subCommands: { install, login, logout, create, join, code, players, send, inbox, approve, dashboard, status, doctor, uninstall, mcp },
+  subCommands: { install, login, logout, create, invite, accept, dashboard, players, send, inbox, status, doctor, uninstall, mcp },
 }));

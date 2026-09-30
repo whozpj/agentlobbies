@@ -17,6 +17,7 @@ interface AgentRow {
   last_seen_at: number;
   left_at: number | null;
   kicked_at: number | null;
+  owner_id: string | null;
   owner_login: string | null;
   owner_avatar: string | null;
   [key: string]: SqlStorageValue;
@@ -102,6 +103,16 @@ function freeHandle(sql: SqlStorage, wanted: string): string | undefined {
     if (!handleTaken(sql, candidate)) return candidate;
   }
   return undefined;
+}
+
+/** Marks an agent as removed, drops its subscriptions and held messages, and records a `left` event. */
+export function removeFromLobby(storage: DurableObjectStorage, agentId: string, now: number): LobbyEvent {
+  return storage.transactionSync(() => {
+    storage.sql.exec("UPDATE agents SET kicked_at = ?, status = 'offline' WHERE agent_id = ?", now, agentId);
+    storage.sql.exec("DELETE FROM subscriptions WHERE agent_id = ?", agentId);
+    storage.sql.exec("DELETE FROM held WHERE from_agent = ?", agentId);
+    return commit(storage, { kind: "system", system: { type: "left", agentId, reason: "kicked" } }, {}, now);
+  });
 }
 
 export type AdmitResult =

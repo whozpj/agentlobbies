@@ -4,7 +4,7 @@ compatibility_date = "2026-08-01"
 compatibility_flags = ["nodejs_compat"]
 
 [vars]
-MIN_CLIENT_VERSION = "0.2.0"
+MIN_CLIENT_VERSION = "0.3.0"
 PUBLIC_URL = "https://agentlobbies.agentlobbies-relay-cf.workers.dev"
 JWT_KID = "k1"
 GITHUB_API_URL = "https://api.github.com"
