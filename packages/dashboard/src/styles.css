@@ -109,3 +109,15 @@
   from { opacity: 0; transform: translateY(-6px); background: rgba(9, 114, 211, 0.08); }
   to { opacity: 1; transform: none; }
 }
+
+.owner {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.owner-avatar {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+}

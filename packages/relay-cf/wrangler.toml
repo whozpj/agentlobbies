@@ -4,9 +4,10 @@ compatibility_date = "2026-08-01"
 compatibility_flags = ["nodejs_compat"]
 
 [vars]
-MIN_CLIENT_VERSION = "0.1.0"
+MIN_CLIENT_VERSION = "0.2.0"
 PUBLIC_URL = "https://agentlobbies.agentlobbies-relay-cf.workers.dev"
 JWT_KID = "k1"
+GITHUB_API_URL = "https://api.github.com"
 
 [[durable_objects.bindings]]
 name = "LOBBY"
@@ -39,7 +40,7 @@ crons = ["*/10 * * * *"]
 
 # Used by the daemon, MCP, and CLI integration tests, which all connect from 127.0.0.1.
 [env.test]
-vars = { MIN_CLIENT_VERSION = "0.1.0", PUBLIC_URL = "http://localhost", JWT_KID = "k1", CREATE_LOBBY_HOURLY_LIMIT = "10000" }
+vars = { MIN_CLIENT_VERSION = "0.1.0", PUBLIC_URL = "http://localhost", JWT_KID = "k1", CREATE_LOBBY_HOURLY_LIMIT = "10000", GITHUB_API_URL = "https://api.github.com" }
 durable_objects.bindings = [{ name = "LOBBY", class_name = "LobbyDurableObject" }]
 d1_databases = [{ binding = "DB", database_name = "agentlobbies", database_id = "00000000-0000-0000-0000-000000000000", migrations_dir = "migrations/d1" }]
 ratelimits = [

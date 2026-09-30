@@ -17,6 +17,7 @@ async function setup(agentJoin: "allow" | "confirm" = "allow") {
   const daemon = new Daemon({ home: mkdtempSync(join(tmpdir(), "al-home-")), relayUrl, agentJoin, dashboardDir: staticDir });
   await daemon.start();
   running.push(daemon);
+  await daemon.call("account.login", { githubToken: "gho_fake_tester" });
   const { sessionId } = await daemon.call("session.open", { client: "cli", cwd: mkdtempSync(join(tmpdir(), "host-")) });
   const host = (method: string, params: Record<string, unknown> = {}) => daemon.call(method, { sessionId, ...params });
   const { code } = await host("lobby.create", { handle: "prithvi", name: "food-app" });

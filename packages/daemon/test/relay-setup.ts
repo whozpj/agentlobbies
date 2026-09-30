@@ -5,10 +5,12 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { TestProject } from "vitest/node";
 import { unstable_dev } from "wrangler";
+import { startFakeGitHub } from "./fake-github";
 
 declare module "vitest" {
   export interface ProvidedContext {
     relayUrl: string;
+    githubUrl: string;
   }
 }
 
@@ -20,6 +22,7 @@ export default async function setup(project: TestProject) {
     cwd: relayDir, stdio: "ignore",
   });
 
+  const github = await startFakeGitHub();
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const worker = await unstable_dev(join(relayDir, "src/worker.ts"), {
     config: join(relayDir, "wrangler.toml"),
@@ -29,10 +32,15 @@ export default async function setup(project: TestProject) {
       JWT_PRIVATE_KEY: privateKey.export({ format: "pem", type: "pkcs8" }).toString(),
       JWT_PUBLIC_KEYS: JSON.stringify({ k1: publicKey.export({ format: "pem", type: "spki" }).toString() }),
       IP_HASH_SALT: randomBytes(32).toString("hex"),
+      GITHUB_API_URL: github.url,
     },
     experimental: { disableExperimentalWarning: true },
   });
 
   project.provide("relayUrl", `http://${worker.address}:${worker.port}`);
-  return () => worker.stop();
+  project.provide("githubUrl", github.url);
+  return async () => {
+    await worker.stop();
+    github.server.close();
+  };
 }

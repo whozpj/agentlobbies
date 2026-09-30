@@ -11,11 +11,13 @@ import { inject } from "vitest";
 declare module "vitest" {
   export interface ProvidedContext {
     relayUrl: string;
+    githubUrl: string;
   }
 }
 
 const bin = inject("bin");
 const relayUrl = inject("relayUrl");
+const githubUrl = inject("githubUrl");
 export const machines: Machine[] = [];
 
 /** Asks a machine's daemon to exit, like a reboot or a crash would. */
@@ -32,15 +34,24 @@ export function stopDaemon(home: string): Promise<void> {
 /** One computer: its own daemon home, a human at the CLI, and agents over stdio MCP. */
 export class Machine {
   readonly home = mkdtempSync(join("/tmp", "al-e2e-"));
-  private readonly env = { ...process.env, AGENTLOBBIES_HOME: this.home, AGENTLOBBIES_RELAY_URL: relayUrl, NO_COLOR: "1" } as Record<string, string>;
+  private readonly env = { ...process.env, AGENTLOBBIES_HOME: this.home, AGENTLOBBIES_RELAY_URL: relayUrl, AGENTLOBBIES_GITHUB_URL: githubUrl, NO_COLOR: "1" } as Record<string, string>;
 
   constructor() {
     machines.push(this);
   }
 
   async cli(cwd: string, ...args: string[]): Promise<string> {
-    const { stdout } = await promisify(execFile)(bin, args, { cwd, env: this.env });
+    return this.cliWith({}, cwd, ...args);
+  }
+
+  async cliWith(extraEnv: Record<string, string>, cwd: string, ...args: string[]): Promise<string> {
+    const { stdout } = await promisify(execFile)(bin, args, { cwd, env: { ...this.env, ...extraEnv } });
     return stdout;
+  }
+
+  /** Signs in through the real CLI device flow, as GitHub user `login` on the fake GitHub. */
+  async login(login: string): Promise<string> {
+    return this.cliWith({ AGENTLOBBIES_GITHUB_CLIENT_ID: `test-${login}` }, this.home, "login", "--no-open");
   }
 
   async agent(client: "claude-code" | "codex", cwd = mkdtempSync(join(tmpdir(), `${client}-`))): Promise<Agent> {

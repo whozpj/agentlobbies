@@ -58,6 +58,11 @@ const MIGRATIONS = [
 
   CREATE TABLE jobs (name TEXT PRIMARY KEY, due_at INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0);
   `,
+  `
+  ALTER TABLE agents ADD COLUMN owner_id TEXT;
+  ALTER TABLE agents ADD COLUMN owner_login TEXT;
+  ALTER TABLE agents ADD COLUMN owner_avatar TEXT;
+  `,
 ];
 
 /** True once init() has created this lobby. Stray requests must not create tables (G17). */

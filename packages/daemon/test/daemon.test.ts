@@ -14,6 +14,7 @@ async function startDaemon(home = mkdtempSync(join(tmpdir(), "al-home-")), agent
   const daemon = new Daemon({ home, relayUrl, agentJoin });
   await daemon.start();
   running.push(daemon);
+  await daemon.call("account.login", { githubToken: "gho_fake_tester" });
   return daemon;
 }
 

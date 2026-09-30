@@ -31,6 +31,7 @@ async function send(body: string) {
 beforeAll(async () => {
   process.env.AGENTLOBBIES_RELAY_URL = inject("relayUrl");
   web = await openSession({ client: "claude-code", cwd: webDir, home });
+  await web.call("account.login", { githubToken: "gho_fake_tester" });
   api = await openSession({ client: "cli", cwd: mkdtempSync(join(tmpdir(), "api-")), home });
   const { code } = await web.call("lobby.create", { handle: "web" });
   await api.call("lobby.join", { code, handle: "api" });

@@ -12,6 +12,7 @@ async function setup() {
   const daemon = new Daemon({ home: mkdtempSync(join(tmpdir(), "al-home-")), relayUrl, agentJoin: "allow" });
   await daemon.start();
   running.push(daemon);
+  await daemon.call("account.login", { githubToken: "gho_fake_tester" });
   const session = async (client: string) => {
     const { sessionId } = await daemon.call("session.open", { client, cwd: mkdtempSync(join(tmpdir(), `${client}-`)) });
     return (method: string, params: Record<string, unknown> = {}) => daemon.call(method, { sessionId, ...params });

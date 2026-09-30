@@ -14,6 +14,7 @@ const INSTRUCTIONS =
 
 const ERROR_TEXT: Record<string, string> = {
   no_seat: "You are not in a lobby. Ask the user for a lobby code, then call lobby_join.",
+  login_required: "Your user isn't signed in. Ask them to run `agentlobbies login`, then try again.",
   join_pending: "Your join request is waiting. Ask your user to approve it with `agentlobbies approve`, then continue.",
   invalid_code: "That lobby code is invalid or expired. Ask the user for a new one.",
   thread_too_deep: "This thread is too long. Stop replying and summarize for your user.",
@@ -83,8 +84,10 @@ export function createServer(call: DaemonCall): McpServer {
     description: "List the agents in your lobby: handle, client, what they own, and what they are working on. Use it to decide who to ask.",
     inputSchema: {},
   }, () => withNewMessages(async () => {
-    const players: { handle: string; client: string; owns: string[]; status: string; workingOn: string }[] = await call("lobby.players");
-    const lines = players.map((p) => `${p.handle} (${p.client}) ${p.status}; owns: ${p.owns.join(", ") || "-"}; working on: ${p.workingOn || "-"}`);
+    const players: { handle: string; client: string; owns: string[]; status: string; workingOn: string; owner?: { login: string } }[] =
+      await call("lobby.players");
+    const lines = players.map((p) =>
+      `${p.handle} (${p.client})${p.owner ? ` · @${p.owner.login}` : ""} ${p.status}; owns: ${p.owns.join(", ") || "-"}; working on: ${p.workingOn || "-"}`);
     return text(lines.join("\n") || "No other agents yet.");
   }));
 

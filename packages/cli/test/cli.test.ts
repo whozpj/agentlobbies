@@ -4,11 +4,12 @@ import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { afterAll, describe, expect, inject, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
 
 declare module "vitest" {
   export interface ProvidedContext {
     relayUrl: string;
+    githubUrl: string;
   }
 }
 
@@ -27,7 +28,7 @@ async function cli(cwd: string, ...args: string[]): Promise<{ out: string; code:
 }
 
 async function cliWith(extraEnv: Record<string, string>, cwd: string, ...args: string[]): Promise<{ out: string; code: number }> {
-  const env = { ...process.env, AGENTLOBBIES_HOME: home, AGENTLOBBIES_RELAY_URL: inject("relayUrl"), NO_COLOR: "1", ...extraEnv };
+  const env = { ...process.env, AGENTLOBBIES_HOME: home, AGENTLOBBIES_RELAY_URL: inject("relayUrl"), AGENTLOBBIES_GITHUB_URL: inject("githubUrl"), NO_COLOR: "1", ...extraEnv };
   try {
     const { stdout } = await promisify(execFile)(process.execPath, [CLI, ...args], { cwd, env });
     return { out: stdout, code: 0 };
@@ -47,7 +48,32 @@ async function eventually(fn: () => Promise<{ out: string }>, contains: string) 
 
 const codeIn = (out: string) => out.match(/[2-9]-[a-z]+-[a-z]+/)![0];
 
+beforeAll(async () => {
+  const login = await cli(folder("login"), "login");
+  if (!login.out.includes("Signed in as @tester")) throw new Error(`login failed: ${login.out}`);
+});
+
 describe("agentlobbies CLI", () => {
+  it("signs in with GitHub's device flow and shows who you are", async () => {
+    const r = await cli(folder("x"), "login");
+    expect(r.out).toContain("WDJB-MJHT");
+    expect(r.out).toContain("Signed in as @tester");
+    expect((await cli(folder("x"), "doctor")).out).toContain("Signed in as @tester");
+  });
+
+  it("asks you to sign in before creating a lobby", async () => {
+    const r = await cliWith({ AGENTLOBBIES_HOME: mkdtempSync(join("/tmp", "al-new-")) }, folder("x"), "create");
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("agentlobbies login");
+  });
+
+  it("shows each player's owner", async () => {
+    const hostDir = folder("host");
+    const code = codeIn((await cli(hostDir, "create", "--handle", "prithvi")).out);
+    await cli(folder("api"), "join", code, "--handle", "api");
+    expect((await eventually(() => cli(hostDir, "players"), "api")).out).toContain("@tester");
+  });
+
   it("creates a lobby, lets another folder join, and shows both players", async () => {
     const hostDir = folder("host");
     const created = await cli(hostDir, "create", "--name", "food-app", "--handle", "prithvi");

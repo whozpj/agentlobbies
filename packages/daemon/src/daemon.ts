@@ -5,6 +5,7 @@ import {
 import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdirSync, realpathSync } from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { ulid } from "ulid";
 import { Connection, type ConnectionState } from "./connection";
@@ -35,6 +36,7 @@ export interface SurfacedMessage {
   fromAgentId: string;
   fromClient?: string;
   fromModel?: string;
+  fromOwner?: string;
   type: Envelope["type"];
   to: Recipient;
   body: string;
@@ -105,6 +107,28 @@ export class Daemon extends EventEmitter {
   private readonly methods: Record<string, (p: Params) => Promise<unknown>> = {
     "daemon.info": async () => ({ version: CLIENT_VERSION, pid: process.pid, seats: this.db.activeSeats().length }),
 
+    "account.login": async (p) => {
+      const keys = await generateSeatKeys();
+      const res = await this.relay<{ token: string; machineId: string; user: { userId: string; login: string; avatarUrl: string } }>(
+        "/v1/auth/github", { githubToken: String(p.githubToken ?? ""), machinePublicKey: toB64u(keys.publicKey), machineName: hostname() },
+      );
+      saveKey(this.opts.home, "machine", keys.secretKey);
+      this.db.setAccount({ user_id: res.user.userId, login: res.user.login, avatar_url: res.user.avatarUrl, token: res.token, machine_id: res.machineId });
+      return { login: res.user.login, avatarUrl: res.user.avatarUrl };
+    },
+
+    "account.status": async () => {
+      const account = this.db.account();
+      return account ? { login: account.login, avatarUrl: account.avatar_url } : null;
+    },
+
+    "account.logout": async () => {
+      const account = this.db.account();
+      if (account) await this.relay("/v1/auth/logout", {}, account.token).catch(() => {});
+      this.db.clearAccount();
+      return {};
+    },
+
     "daemon.shutdown": async () => {
       setImmediate(() => this.emit("shutdown"));
       return {};
@@ -130,7 +154,7 @@ export class Daemon extends EventEmitter {
       const keys = await generateSeatKeys();
       const profile = this.profile(session, p, toB64u(keys.publicKey));
       const res = await this.relay<{ lobbyId: string; agentId: string; token: string; code: string; codeExpiresAt: number }>(
-        "/v1/lobbies", { host: profile, settings: p.name ? { name: String(p.name) } : {} },
+        "/v1/lobbies", { host: profile, settings: p.name ? { name: String(p.name) } : {} }, await this.accountToken(),
       );
       this.addSeat(session.seatKey, { lobbyId: res.lobbyId, lobbyName: p.name ? String(p.name) : null, agentId: res.agentId,
                               handle: profile.handle, role: "host", token: res.token }, keys.secretKey);
@@ -253,7 +277,7 @@ export class Daemon extends EventEmitter {
     const keys = await generateSeatKeys();
     const profile = { handle: r.handle, client: r.client as AgentProfile["client"], owns: r.owns, workingOn: "", publicKey: toB64u(keys.publicKey) };
     const res = await this.relay<{ lobbyId: string; agentId: string; token: string; role: "member" | "observer"; handle: string }>(
-      "/v1/join", { code: r.code, agent: profile },
+      "/v1/join", { code: r.code, agent: profile }, await this.accountToken(),
     );
     this.addSeat(r.seat_key, { lobbyId: res.lobbyId, lobbyName: null, agentId: res.agentId, handle: res.handle,
                                role: res.role, token: res.token }, keys.secretKey);
@@ -337,6 +361,19 @@ export class Daemon extends EventEmitter {
     });
     this.connections.set(seat.seat_id, conn);
     void conn.start();
+  }
+
+  /** The signed-in account's token, refreshed with the machine key when it is expiring or unreadable (LLD 14.2). */
+  private async accountToken(): Promise<string> {
+    const account = this.db.account();
+    if (!account) throw new DaemonError("login_required", "Sign in first with `agentlobbies login`.");
+    if (!expiresWithinAnHour(account.token)) return account.token;
+    const ts = Date.now();
+    const sig = await webCrypto.sign(loadKey(this.opts.home, "machine"), refreshSigningBytes({ lobbyId: "account", agentId: account.machine_id, ts }));
+    const { token } = await this.relay<{ token: string }>("/v1/auth/refresh", { machineId: account.machine_id, ts, sig: toB64u(sig) })
+      .catch(() => { throw new DaemonError("login_required", "Your sign-in expired. Run `agentlobbies login` again."); });
+    this.db.setAccountToken(token);
+    return token;
   }
 
   /** The seat's token, refreshed with a signature from its key when it's expiring or was refused (C6). */
@@ -480,6 +517,7 @@ export class Daemon extends EventEmitter {
       id: env.id, seq: e.seq, from: sender?.handle ?? env.from, fromAgentId: env.from, type: env.type, to: env.to, body: env.body,
       ...(sender ? { fromClient: sender.client } : {}),
       ...(sender?.model ? { fromModel: sender.model } : {}),
+      ...(sender?.owner ? { fromOwner: sender.owner.login } : {}),
       ...(env.inReplyTo ? { inReplyTo: env.inReplyTo } : {}),
       ...(env.attachments ? { attachments: env.attachments } : {}),
     };

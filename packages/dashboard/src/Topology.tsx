@@ -88,7 +88,9 @@ export function Topology({ agents, latest }: { agents: Agent[]; latest: Message 
             <text className="topology-initials" textAnchor="middle" dy="0.35em">{agent.handle.slice(0, 2).toUpperCase()}</text>
             <circle cx={19} cy={-19} r={6} className={`topology-status ${agent.status}`} />
             <text className="topology-label" textAnchor="middle" y={44}>{agent.handle}</text>
-            <text className="topology-sublabel" textAnchor="middle" y={60}>{agent.client}{agent.owns.length ? ` · ${agent.owns.join(", ")}` : ""}</text>
+            <text className="topology-sublabel" textAnchor="middle" y={60}>
+              {[agent.owner && `@${agent.owner.login}`, agent.client, agent.owns.join(", ")].filter(Boolean).join(" · ")}
+            </text>
           </g>
         );
       })}

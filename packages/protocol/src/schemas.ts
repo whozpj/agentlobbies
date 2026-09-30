@@ -16,6 +16,8 @@ export const Status = z.enum(["active", "busy", "idle", "offline"]);
 /** What a client may claim about itself; only the relay marks agents offline (G31). */
 export const PresenceStatus = z.enum(["active", "busy", "idle"]);
 
+export const Owner = z.object({ login: z.string(), avatarUrl: z.string() });
+
 export const AgentProfile = z.object({
   agentId: Ulid,
   handle: Handle,
@@ -28,6 +30,7 @@ export const AgentProfile = z.object({
   publicKey: B64u,
   joinedAt: Ms,
   lastSeenAt: Ms,
+  owner: Owner.optional(),
 });
 
 export const JoinProfile = AgentProfile.pick({ handle: true, client: true, model: true, owns: true, publicKey: true })
@@ -104,6 +107,7 @@ export type ClientId = z.infer<typeof ClientId>;
 export type Role = z.infer<typeof Role>;
 export type Status = z.infer<typeof Status>;
 export type AgentProfile = z.infer<typeof AgentProfile>;
+export type Owner = z.infer<typeof Owner>;
 export type JoinProfile = z.infer<typeof JoinProfile>;
 export type Recipient = z.infer<typeof Recipient>;
 export type Attachment = z.infer<typeof Attachment>;

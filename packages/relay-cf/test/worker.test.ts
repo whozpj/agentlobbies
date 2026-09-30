@@ -2,8 +2,8 @@ import { refreshSigningBytes, signEnvelope, toB64u, webCrypto } from "@agentlobb
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { ulid } from "ulid";
-import { describe, expect, it } from "vitest";
-import { TestSocket, api, createLobby, joinLobby, postJson, randomIp, type Seat } from "./client";
+import { beforeAll, describe, expect, it } from "vitest";
+import { TestSocket, api, createLobby, fakeGitHub, joinLobby, postJson, randomIp, signIn, type Seat } from "./client";
 import { newAgent } from "./helpers";
 
 function envelope(seat: Seat, fields: Record<string, unknown> = {}) {
@@ -12,6 +12,8 @@ function envelope(seat: Seat, fields: Record<string, unknown> = {}) {
     type: "update", threadDepth: 0, body: "renamed etaMinutes to estimatedArrival", createdAt: Date.now(), ...fields,
   });
 }
+
+beforeAll(() => fakeGitHub());
 
 describe("REST", () => {
   it("reports health", async () => {
@@ -35,21 +37,22 @@ describe("REST", () => {
   });
 
   it("rejects an unknown code with invalid_code", async () => {
-    const res = await postJson("/v1/join", { code: "2-abandon-ability", agent: (await createLobby()).profile });
+    const res = await postJson("/v1/join", { code: "2-abandon-ability", agent: (await createLobby()).profile }, randomIp(), (await signIn("joiner")).token);
     expect(res.status).toBe(404);
     expect(await res.json()).toMatchObject({ error: { code: "invalid_code" } });
   });
 
   it("returns 400 bad_request for an invalid body", async () => {
-    const res = await postJson("/v1/lobbies", { host: { handle: "Not Valid" } });
+    const res = await postJson("/v1/lobbies", { host: { handle: "Not Valid" } }, randomIp(), (await signIn("creator")).token);
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ error: { code: "bad_request" } });
   });
 
   it("limits lobby creation to 5 per minute from one IP (G14)", async () => {
     const ip = randomIp();
+    const { token } = await signIn("busy-creator");
     const statuses: number[] = [];
-    for (let i = 0; i < 6; i++) statuses.push((await postJson("/v1/lobbies", { host: (await newAgent("host")).profile }, ip)).status);
+    for (let i = 0; i < 6; i++) statuses.push((await postJson("/v1/lobbies", { host: (await newAgent("host")).profile }, ip, token)).status);
     expect(statuses).toEqual([201, 201, 201, 201, 201, 429]);
   });
 

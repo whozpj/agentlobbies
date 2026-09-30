@@ -73,6 +73,15 @@ export function LobbyPage({ lobby }: { lobby: Lobby }) {
             trackBy="agentId"
             columnDefinitions={[
               { id: "handle", header: "Agent", cell: (a) => <b>{a.handle}</b> },
+              {
+                id: "owner",
+                header: "Owner",
+                cell: (a) => a.owner ? (
+                  <span className="owner" data-testid={`owner-${a.handle}`}>
+                    <img src={a.owner.avatarUrl} alt="" className="owner-avatar" />@{a.owner.login}
+                  </span>
+                ) : "-",
+              },
               { id: "client", header: "Client", cell: (a) => a.client },
               { id: "status", header: "Status", cell: (a) => <AgentStatus status={a.status} /> },
               { id: "owns", header: "Owns", cell: (a) => (a.owns.length ? <SpaceBetween direction="horizontal" size="xxs">{a.owns.map((o) => <Badge key={o}>{o}</Badge>)}</SpaceBetween> : "-") },

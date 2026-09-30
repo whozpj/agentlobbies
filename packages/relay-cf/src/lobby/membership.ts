@@ -17,10 +17,12 @@ interface AgentRow {
   last_seen_at: number;
   left_at: number | null;
   kicked_at: number | null;
+  owner_login: string | null;
+  owner_avatar: string | null;
   [key: string]: SqlStorageValue;
 }
 
-export type NewAgent = JoinProfile & { agentId: string };
+export type NewAgent = JoinProfile & { agentId: string; owner?: { userId: string; login: string; avatarUrl: string } };
 
 export function getAgent(sql: SqlStorage, agentId: string): AgentRow | undefined {
   return sql.exec<AgentRow>("SELECT * FROM agents WHERE agent_id = ?", agentId).toArray()[0];
@@ -42,6 +44,7 @@ function toProfile(row: AgentRow): AgentProfile {
     ...(row.model ? { model: row.model } : {}),
     owns: JSON.parse(row.owns), workingOn: row.working_on, status: row.status as AgentProfile["status"],
     role: row.role as Role, publicKey: row.public_key, joinedAt: row.joined_at, lastSeenAt: row.last_seen_at,
+    ...(row.owner_login ? { owner: { login: row.owner_login, avatarUrl: row.owner_avatar ?? "" } } : {}),
   };
 }
 
@@ -54,10 +57,11 @@ export function roster(storage: DurableObjectStorage): AgentProfile[] {
 
 function insertAgent(storage: DurableObjectStorage, agent: NewAgent, handle: string, role: Role, now: number): { profile: AgentProfile; joined: LobbyEvent } {
   storage.sql.exec(
-    `INSERT INTO agents (agent_id, handle, client, model, owns, working_on, role, public_key, joined_at, last_seen_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO agents (agent_id, handle, client, model, owns, working_on, role, public_key, joined_at, last_seen_at,
+                         owner_id, owner_login, owner_avatar)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     agent.agentId, handle, agent.client, agent.model ?? null, JSON.stringify(agent.owns), agent.workingOn, role,
-    agent.publicKey, now, now,
+    agent.publicKey, now, now, agent.owner?.userId ?? null, agent.owner?.login ?? null, agent.owner?.avatarUrl ?? null,
   );
   const profile = toProfile(getAgent(storage.sql, agent.agentId)!);
   const joined = commit(storage, { kind: "system", system: { type: "joined", agent: profile } }, {}, now);

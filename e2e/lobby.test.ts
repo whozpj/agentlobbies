@@ -19,6 +19,8 @@ describe("two machines, two agents", () => {
   it("E1: a frontend agent asks the backend agent's owner and uses the answer; E5: catches up after downtime", async () => {
     const laptop = new Machine();
     const server = new Machine();
+    expect(await laptop.login("laptop-owner")).toContain("Signed in as @laptop-owner");
+    await server.login("server-owner");
 
     const created = await laptop.cli(laptop.home, "create", "--name", "food-app", "--handle", "prithvi");
     const code = created.match(/[2-9]-[a-z]+-[a-z]+/)![0];
@@ -31,7 +33,7 @@ describe("two machines, two agents", () => {
     await api.tool("lobby_join", { code, handle: "api-codex", owns: ["api"] });
     await server.approveAll();
 
-    expect(await web.until("lobby_players", "api-codex (codex) active")).toContain("owns: api");
+    expect(await web.until("lobby_players", "api-codex (codex) · @server-owner active")).toContain("owns: api");
     expect(await web.tool("lobby_ask", { to: "owner:api", question: "What field holds the delivery ETA?" })).toContain("Sent question");
 
     const question = await api.until("lobby_status", "delivery ETA");
@@ -59,6 +61,7 @@ describe("two machines, two agents", () => {
 
   it("keeps working when the daemon restarts under a running agent", async () => {
     const laptop = new Machine();
+    await laptop.login("restarter");
     await laptop.cli(laptop.home, "create", "--handle", "prithvi");
     const web = await laptop.agent("claude-code");
     expect(await web.tool("lobby_status")).toContain("not in a lobby");

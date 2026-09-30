@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import pc from "picocolors";
 import { CLIENTS, detectClients, hookCommand, mcpCommand } from "./install";
+import { githubDeviceLogin } from "./login";
 
 type Call = (method: string, params?: Record<string, unknown>) => Promise<any>;
 
@@ -14,6 +15,7 @@ type Call = (method: string, params?: Record<string, unknown>) => Promise<any>;
 const EXIT_CODES: Record<string, number> = { rate_limited: 3, invalid_code: 4, lobby_full: 5, forbidden: 6 };
 
 const MESSAGES: Record<string, string> = {
+  login_required: "Sign in first: run `agentlobbies login`.",
   no_seat: "You are not in a lobby in this folder. Run `agentlobbies create` or `agentlobbies join <code>`.",
   invalid_code: "That code is invalid or expired. Ask the host for a new one.",
   forbidden: "Only the lobby host can do that.",
@@ -33,6 +35,20 @@ async function withLobby(fn: (call: Call) => Promise<void>): Promise<void> {
   }
 }
 
+function openInBrowser(url: string): void {
+  const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
+  spawn(opener, [url], { detached: true, stdio: "ignore" }).on("error", () => {}).unref();
+}
+
+async function signIn(call: Call, openBrowser: boolean): Promise<void> {
+  const githubToken = await githubDeviceLogin((userCode, url) => {
+    console.log(`Open ${pc.bold(url)} and enter the code ${pc.bold(userCode)}`);
+    if (openBrowser) openInBrowser(url);
+  });
+  const { login } = await call("account.login", { githubToken });
+  console.log(`${pc.green("✓")} Signed in as @${login}`);
+}
+
 function parseTtl(ttl: string | undefined): number | undefined {
   const match = ttl?.match(/^(\d+)(m|h)$/);
   if (!match) return undefined;
@@ -40,6 +56,20 @@ function parseTtl(ttl: string | undefined): number | undefined {
 }
 
 const time = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+const login = defineCommand({
+  meta: { description: "Sign in with GitHub so your agents show as yours" },
+  args: { open: { type: "boolean", default: true, description: "Open the GitHub page in your browser" } },
+  run: ({ args }) => withLobby((call) => signIn(call, args.open && process.stdout.isTTY)),
+});
+
+const logout = defineCommand({
+  meta: { description: "Sign out on this machine" },
+  run: () => withLobby(async (call) => {
+    await call("account.logout");
+    console.log("Signed out.");
+  }),
+});
 
 const create = defineCommand({
   meta: { description: "Create a lobby and become its host" },
@@ -91,10 +121,12 @@ const code = defineCommand({
 const players = defineCommand({
   meta: { description: "List everyone in the lobby" },
   run: () => withLobby(async (call) => {
-    const list: { handle: string; client: string; status: string; owns: string[]; workingOn: string }[] = await call("lobby.players");
+    const list: { handle: string; client: string; status: string; owns: string[]; workingOn: string; owner?: { login: string } }[] =
+      await call("lobby.players");
     for (const p of list) {
       const status = p.status === "offline" ? pc.dim(p.status) : pc.green(p.status);
-      console.log(`${pc.bold(p.handle)}  ${p.client}  ${status}  owns: ${p.owns.join(", ") || "-"}  ${pc.dim(p.workingOn)}`);
+      const owner = p.owner ? `@${p.owner.login}` : "-";
+      console.log(`${pc.bold(p.handle)}  ${owner}  ${p.client}  ${status}  owns: ${p.owns.join(", ") || "-"}  ${pc.dim(p.workingOn)}`);
     }
   }),
 });
@@ -153,7 +185,7 @@ const approve = defineCommand({
 
 const install = defineCommand({
   meta: { description: "Add Agent Lobbies to your coding agents (Claude Code, Codex)" },
-  run: () => {
+  run: async () => {
     const found = detectClients(homedir());
     if (found.length === 0) {
       console.error(pc.red(`No supported agents found (${CLIENTS.map((c) => c.name).join(", ")}).`));
@@ -170,6 +202,12 @@ const install = defineCommand({
     if (!hooks) {
       console.log(pc.dim("\nFor instant message delivery in Claude Code, install globally: npm install -g agentlobbies && agentlobbies install"));
     }
+    await withLobby(async (call) => {
+      if (await call("account.status")) return;
+      if (!process.stdin.isTTY) return console.log(`\nNext, sign in: ${pc.bold("agentlobbies login")}`);
+      console.log("\nSign in with GitHub so your agents show as yours:");
+      await signIn(call, true);
+    });
     console.log(`\nRestart your agents to load the tools. Then run ${pc.bold("agentlobbies create")} in any folder.`);
   },
 });
@@ -205,6 +243,13 @@ const doctor = defineCommand({
       check(false, "", `Daemon not running: ${(e as Error).message}`);
     }
 
+    try {
+      const session = await openSession({ client: "cli", cwd: process.cwd() });
+      const account = await session.call("account.status");
+      session.close();
+      check(Boolean(account), `Signed in as @${account?.login}`, "Not signed in; run `agentlobbies login`");
+    } catch {}
+
     const url = relayUrl();
     const healthy = await fetch(`${url}/v1/health`, { signal: AbortSignal.timeout(5000) }).then((r) => r.ok, () => false);
     check(healthy, `Relay reachable at ${url}`, `Relay not reachable at ${url}; check your network or AGENTLOBBIES_RELAY_URL`);
@@ -230,9 +275,7 @@ const dashboard = defineCommand({
   run: ({ args }) => withLobby(async (call) => {
     const { url } = await call("dashboard.start");
     console.log(`Dashboard: ${pc.bold(url)}`);
-    if (!args.open) return;
-    const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
-    spawn(opener, [url], { detached: true, stdio: "ignore" }).unref();
+    if (args.open) openInBrowser(url);
   }),
 });
 
@@ -243,5 +286,5 @@ const mcp = defineCommand({
 
 await runMain(defineCommand({
   meta: { name: "agentlobbies", version: CLIENT_VERSION, description: "Let your coding agents talk to each other" },
-  subCommands: { install, create, join, code, players, send, inbox, approve, dashboard, status, doctor, uninstall, mcp },
+  subCommands: { install, login, logout, create, join, code, players, send, inbox, approve, dashboard, status, doctor, uninstall, mcp },
 }));

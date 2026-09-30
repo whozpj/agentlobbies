@@ -6,9 +6,15 @@ const relayUrl = inject("relayUrl");
 
 async function hostToken(): Promise<{ lobbyId: string; token: string }> {
   const keys = await generateSeatKeys();
-  const res = await fetch(`${relayUrl}/v1/lobbies`, {
+  const signIn = await fetch(`${relayUrl}/v1/auth/github`, {
     method: "POST",
     headers: { "content-type": "application/json" },
+    body: JSON.stringify({ githubToken: "gho_fake_tester", machinePublicKey: toB64u(keys.publicKey), machineName: "test" }),
+  });
+  const { token: accountToken } = (await signIn.json()) as { token: string };
+  const res = await fetch(`${relayUrl}/v1/lobbies`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${accountToken}` },
     body: JSON.stringify({ host: { handle: "host", client: "cli", owns: [], publicKey: toB64u(keys.publicKey) } }),
   });
   return res.json() as Promise<{ lobbyId: string; token: string }>;

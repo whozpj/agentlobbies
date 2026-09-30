@@ -4,6 +4,7 @@ const STATUS = {
   lobby_mismatch: 400,
   too_large: 413,
   unauthorized: 401,
+  login_required: 401,
   forbidden: 403,
   kicked: 403,
   not_found: 404,

@@ -22,6 +22,7 @@ async function eventuallyVisible(page: Page, selector: string) {
 describe("dashboard in a real browser", () => {
   it("shows lobbies, approves a join, and animates messages live", async () => {
     const laptop = new Machine();
+    await laptop.login("whozpj");
     const created = await laptop.cli(laptop.home, "create", "--name", "food-app", "--handle", "prithvi");
     const code = created.match(/[2-9]-[a-z]+-[a-z]+/)![0];
 
@@ -43,6 +44,7 @@ describe("dashboard in a real browser", () => {
     await eventuallyVisible(page, '[data-testid="node-web-claude"]');
     await pwExpect(page.getByTestId("node-prithvi")).toBeVisible();
     await pwExpect(page.getByRole("cell", { name: "web-claude" })).toBeVisible();
+    await pwExpect(page.getByTestId("owner-web-claude")).toHaveText("@whozpj");
 
     await laptop.cli(laptop.home, "send", "web-claude", "Is estimatedArrival an ISO 8601 string?");
     await pwExpect(page.getByTestId("message").filter({ hasText: "Is estimatedArrival an ISO 8601 string?" })).toBeVisible({ timeout: 15_000 });
@@ -64,6 +66,7 @@ describe("dashboard in a real browser", () => {
 
   it("rejects API calls that don't carry the dashboard token", async () => {
     const laptop = new Machine();
+    await laptop.login("token-checker");
     await laptop.cli(laptop.home, "create", "--handle", "prithvi");
     const url = new URL((await laptop.cli(laptop.home, "dashboard", "--no-open")).match(/http:\/\/\S+/)![0]);
     const res = await fetch(`${url.origin}/api/lobbies`);

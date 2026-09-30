@@ -1,9 +1,10 @@
 import {
-  JoinProfile, LobbyCode, LobbySettings, ProtocolError, RATES, TIMINGS, httpStatusOf, type ErrorCode,
+  JoinProfile, LobbyCode, LobbySettings, ProtocolError, RATES, TIMINGS, fromB64u, httpStatusOf, refreshSigningBytes, verifyBytes, webCrypto,
+  type ErrorCode, type Owner,
 } from "@agentlobbies/protocol";
 import { ulid } from "ulid";
 import { z } from "zod";
-import { issueJwt, tokenFromSubprotocol, verifyJwt, type Claims } from "./auth";
+import { issueAccountJwt, issueJwt, tokenFromSubprotocol, verifyAccountJwt, verifyJwt, type Claims } from "./auth";
 import { insertCode } from "./codes";
 
 export { LobbyDurableObject } from "./lobby-do";
@@ -13,6 +14,8 @@ const MAX_BODY_BYTES = 160 * 1024;
 const CreateLobbyBody = z.object({ host: JoinProfile, settings: LobbySettings.partial().optional() });
 const JoinBody = z.object({ code: LobbyCode, agent: JoinProfile });
 const RefreshBody = z.object({ agentId: z.string(), ts: z.number().int(), sig: z.string() });
+const GitHubSignInBody = z.object({ githubToken: z.string().min(1), machinePublicKey: z.string(), machineName: z.string().max(100) });
+const AccountRefreshBody = z.object({ machineId: z.string(), ts: z.number().int(), sig: z.string() });
 const MintCodeBody = z.object({
   role: z.enum(["member", "observer"]).default("member"),
   ttlMs: z.number().int().positive().max(TIMINGS.codeTtlMsMax).default(TIMINGS.codeTtlMsDefault),
@@ -23,6 +26,9 @@ type Handler = (req: Request, env: Env, params: Record<string, string | undefine
 
 const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
   ["GET", new URLPattern({ pathname: "/v1/health" }), health],
+  ["POST", new URLPattern({ pathname: "/v1/auth/github" }), signInWithGitHub],
+  ["POST", new URLPattern({ pathname: "/v1/auth/refresh" }), refreshAccount],
+  ["POST", new URLPattern({ pathname: "/v1/auth/logout" }), logout],
   ["POST", new URLPattern({ pathname: "/v1/lobbies" }), createLobby],
   ["POST", new URLPattern({ pathname: "/v1/join" }), joinLobby],
   ["GET", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/ws" }), upgrade],
@@ -55,6 +61,57 @@ async function health(_req: Request, env: Env): Promise<Response> {
   return Response.json({ ok: true, minClientVersion: env.MIN_CLIENT_VERSION });
 }
 
+/** Verifies a GitHub token once, records the user and this machine, and returns an account token (LLD 14.2). */
+async function signInWithGitHub(req: Request, env: Env): Promise<Response> {
+  const body = await parseBody(req, GitHubSignInBody);
+  const github = await fetch(`${env.GITHUB_API_URL}/user`, {
+    headers: { authorization: `Bearer ${body.githubToken}`, accept: "application/vnd.github+json", "user-agent": "agentlobbies-relay" },
+  });
+  if (!github.ok) throw new ProtocolError("unauthorized", "GitHub rejected the sign-in");
+  const profile = (await github.json()) as { id: number; login: string; avatar_url: string };
+
+  const user = await env.DB.prepare(
+    `INSERT INTO users (user_id, github_id, login, avatar_url, created_at) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT (github_id) DO UPDATE SET login = excluded.login, avatar_url = excluded.avatar_url
+     RETURNING user_id`,
+  ).bind(ulid(), profile.id, profile.login, profile.avatar_url, Date.now()).first<{ user_id: string }>();
+  const machineId = ulid();
+  await env.DB.prepare("INSERT INTO machines (machine_id, user_id, public_key, name, created_at) VALUES (?, ?, ?, ?, ?)")
+    .bind(machineId, user!.user_id, body.machinePublicKey, body.machineName, Date.now()).run();
+
+  const token = await issueAccountJwt(env, { userId: user!.user_id, machineId });
+  return Response.json({ token, machineId, user: { userId: user!.user_id, login: profile.login, avatarUrl: profile.avatar_url } });
+}
+
+async function refreshAccount(req: Request, env: Env): Promise<Response> {
+  const { machineId, ts, sig } = await parseBody(req, AccountRefreshBody);
+  if (Math.abs(Date.now() - ts) > TIMINGS.refreshSkewMs) throw new ProtocolError("unauthorized");
+  const machine = await env.DB.prepare("SELECT user_id, public_key FROM machines WHERE machine_id = ? AND revoked_at IS NULL")
+    .bind(machineId).first<{ user_id: string; public_key: string }>();
+  const signed = refreshSigningBytes({ lobbyId: "account", agentId: machineId, ts });
+  if (!machine || !(await verifyBytes(webCrypto, fromB64u(machine.public_key), signed, sig))) throw new ProtocolError("unauthorized");
+  return Response.json({ token: await issueAccountJwt(env, { userId: machine.user_id, machineId }) });
+}
+
+async function logout(req: Request, env: Env): Promise<Response> {
+  const account = await requireAccount(req, env);
+  await env.DB.prepare("UPDATE machines SET revoked_at = ? WHERE machine_id = ?").bind(Date.now(), account.machineId).run();
+  return Response.json({});
+}
+
+/** The signed-in owner of a request: a valid account token from a machine that hasn't logged out. */
+async function requireAccount(req: Request, env: Env): Promise<Owner & { userId: string; machineId: string }> {
+  const token = req.headers.get("authorization")?.replace(/^Bearer /, "");
+  const claims = token ? await verifyAccountJwt(env, token) : undefined;
+  if (!claims) throw new ProtocolError("login_required", "sign in with `agentlobbies login` first");
+  const user = await env.DB.prepare(
+    `SELECT u.login, u.avatar_url FROM machines m JOIN users u ON u.user_id = m.user_id
+     WHERE m.machine_id = ? AND m.user_id = ? AND m.revoked_at IS NULL`,
+  ).bind(claims.machineId, claims.userId).first<{ login: string; avatar_url: string }>();
+  if (!user) throw new ProtocolError("login_required", "sign in with `agentlobbies login` first");
+  return { ...claims, login: user.login, avatarUrl: user.avatar_url };
+}
+
 async function createLobby(req: Request, env: Env): Promise<Response> {
   const ip = req.headers.get("cf-connecting-ip") ?? "unknown";
   if (!(await env.CREATE_LIMITER.limit({ key: ip })).success) throw new ProtocolError("rate_limited");
@@ -66,6 +123,7 @@ async function createLobby(req: Request, env: Env): Promise<Response> {
   const hourlyLimit = Number(env.CREATE_LOBBY_HOURLY_LIMIT ?? RATES.createLobbyPerIpPerHour);
   if ((recent?.n ?? 0) >= hourlyLimit) throw new ProtocolError("rate_limited");
 
+  const owner = await requireAccount(req, env);
   const body = await parseBody(req, CreateLobbyBody);
   const id = env.LOBBY.newUniqueId();
   const lobbyId = id.toString();
@@ -75,7 +133,7 @@ async function createLobby(req: Request, env: Env): Promise<Response> {
   // Register first as 'creating' so a failed init leaves a row the cron can clean up (G30).
   await env.DB.prepare("INSERT INTO lobbies (lobby_id, name, created_at, status, creator_ip_hash) VALUES (?, ?, ?, 'creating', ?)")
     .bind(lobbyId, body.settings?.name ?? null, now, ipHash).run();
-  await env.LOBBY.get(id).init({ lobbyId, host: { ...body.host, agentId }, settings: body.settings ?? {} });
+  await env.LOBBY.get(id).init({ lobbyId, host: { ...body.host, agentId, owner: ownerOf(owner) }, settings: body.settings ?? {} });
 
   const code = await insertCode(env.DB, lobbyId, { role: "member", expiresAt: now + TIMINGS.codeTtlMsDefault });
   await env.DB.prepare("UPDATE lobbies SET status = 'open' WHERE lobby_id = ?").bind(lobbyId).run();
@@ -90,6 +148,7 @@ async function createLobby(req: Request, env: Env): Promise<Response> {
 async function joinLobby(req: Request, env: Env): Promise<Response> {
   const ip = req.headers.get("cf-connecting-ip") ?? "unknown";
   if (!(await env.CODE_LIMITER.limit({ key: ip })).success) throw new ProtocolError("rate_limited");
+  const owner = await requireAccount(req, env);
   const { code, agent } = await parseBody(req, JoinBody);
 
   // Atomic redeem: checks expiry and uses, and counts the use, in one statement.
@@ -101,7 +160,7 @@ async function joinLobby(req: Request, env: Env): Promise<Response> {
   if (!row) throw new ProtocolError("invalid_code");
 
   const agentId = ulid();
-  const result = await env.LOBBY.get(env.LOBBY.idFromString(row.lobby_id)).admit({ ...agent, agentId }, row.role);
+  const result = await env.LOBBY.get(env.LOBBY.idFromString(row.lobby_id)).admit({ ...agent, agentId, owner: ownerOf(owner) }, row.role);
   if ("error" in result) throw new ProtocolError(result.error);
 
   const token = await issueJwt(env, { sub: agentId, lobby: row.lobby_id, role: row.role });
@@ -156,6 +215,10 @@ async function parseBody<T extends z.ZodTypeAny>(req: Request, schema: T): Promi
   const parsed = schema.safeParse(await req.json().catch(() => undefined));
   if (!parsed.success) throw new ProtocolError("bad_request", parsed.error.issues[0]?.message ?? "invalid body");
   return parsed.data;
+}
+
+function ownerOf(account: Owner & { userId: string }) {
+  return { userId: account.userId, login: account.login, avatarUrl: account.avatarUrl };
 }
 
 async function hmacHex(secret: string, value: string): Promise<string> {

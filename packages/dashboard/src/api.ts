@@ -7,6 +7,7 @@ export interface Agent {
   workingOn: string;
   status: "active" | "busy" | "idle" | "offline";
   role: "host" | "member" | "observer";
+  owner?: { login: string; avatarUrl: string };
 }
 
 export interface Lobby {

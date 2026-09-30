@@ -38,6 +38,39 @@ export async function verifyJwt(env: Env, token: string): Promise<Claims | undef
   }
 }
 
+export interface AccountClaims {
+  userId: string;
+  machineId: string;
+}
+
+const ACCOUNT_TTL = "30d";
+
+export async function issueAccountJwt(env: Env, claims: AccountClaims): Promise<string> {
+  const key = await importPKCS8(env.JWT_PRIVATE_KEY, "EdDSA");
+  return new SignJWT({ kind: "account", machine: claims.machineId })
+    .setProtectedHeader({ alg: "EdDSA", kid: env.JWT_KID })
+    .setSubject(claims.userId)
+    .setIssuer(ISSUER)
+    .setAudience(AUDIENCE)
+    .setIssuedAt()
+    .setExpirationTime(ACCOUNT_TTL)
+    .sign(key);
+}
+
+/** Verifies an account token (not a lobby seat token). Returns undefined if invalid. */
+export async function verifyAccountJwt(env: Env, token: string): Promise<AccountClaims | undefined> {
+  try {
+    const { kid } = decodeProtectedHeader(token);
+    const pem = (JSON.parse(env.JWT_PUBLIC_KEYS) as Record<string, string>)[kid ?? ""];
+    if (!pem) return undefined;
+    const { payload } = await jwtVerify(token, await importSPKI(pem, "EdDSA"), { issuer: ISSUER, audience: AUDIENCE, algorithms: ["EdDSA"] });
+    if (payload.kind !== "account" || typeof payload.sub !== "string" || typeof payload.machine !== "string") return undefined;
+    return { userId: payload.sub, machineId: payload.machine };
+  } catch {
+    return undefined;
+  }
+}
+
 /** Browsers can't set headers on WebSockets, so the token rides in the subprotocol list. */
 export function tokenFromSubprotocol(req: Request): string | undefined {
   const protocols = (req.headers.get("Sec-WebSocket-Protocol") ?? "").split(",").map((p) => p.trim());

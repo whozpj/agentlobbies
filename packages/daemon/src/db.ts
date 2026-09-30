@@ -39,6 +39,15 @@ const SCHEMA = `
     created_at INTEGER NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS account (
+    id         INTEGER PRIMARY KEY CHECK (id = 1),
+    user_id    TEXT NOT NULL,
+    login      TEXT NOT NULL,
+    avatar_url TEXT NOT NULL,
+    token      TEXT NOT NULL,
+    machine_id TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS join_requests (
     id         TEXT PRIMARY KEY,
     seat_key   TEXT NOT NULL,
@@ -77,6 +86,14 @@ function eventId(e: LobbyEvent): string {
 }
 
 /** The daemon's local SQLite: seats, inbox, outbox, and a roster cache per seat (LLD 7.2). */
+export interface Account {
+  user_id: string;
+  login: string;
+  avatar_url: string;
+  token: string;
+  machine_id: string;
+}
+
 export interface JoinRequest {
   id: string;
   seat_key: string;
@@ -211,6 +228,23 @@ export class Db {
 
   finishOutbox(reqId: string, state: "done" | "failed"): void {
     this.db.prepare("UPDATE outbox SET state = ? WHERE req_id = ?").run(state, reqId);
+  }
+
+  account(): Account | undefined {
+    return this.db.prepare("SELECT user_id, login, avatar_url, token, machine_id FROM account WHERE id = 1").get() as Account | undefined;
+  }
+
+  setAccount(a: Account): void {
+    this.db.prepare("INSERT OR REPLACE INTO account (id, user_id, login, avatar_url, token, machine_id) VALUES (1, ?, ?, ?, ?, ?)")
+      .run(a.user_id, a.login, a.avatar_url, a.token, a.machine_id);
+  }
+
+  setAccountToken(token: string): void {
+    this.db.prepare("UPDATE account SET token = ? WHERE id = 1").run(token);
+  }
+
+  clearAccount(): void {
+    this.db.prepare("DELETE FROM account").run();
   }
 
   addJoinRequest(r: JoinRequest): void {
