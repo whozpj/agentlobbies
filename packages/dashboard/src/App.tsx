@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { AgentsPage } from "./AgentsPage";
-import { api, lobbyName, type Lobby, type Me, type MyAgent } from "./api";
+import { api, isHosted, lobbyName, type Lobby, type Me, type MyAgent } from "./api";
 import { LobbiesPage } from "./LobbiesPage";
 import { LobbyPage } from "./LobbyPage";
 import { Avatar, Logo } from "./ui";
+import { InvitePage, SignInPage } from "./Welcome";
 
 function useHashRoute(): string {
   const [route, setRoute] = useState(location.hash.slice(1) || "/");
@@ -35,7 +36,7 @@ function useTheme(): [string, () => void] {
 export function App() {
   const route = useHashRoute();
   const [theme, toggleTheme] = useTheme();
-  const [me, setMe] = useState<Me | null>(null);
+  const [me, setMe] = useState<Me | null | undefined>(undefined); // undefined while loading
   const [lobbies, setLobbies] = useState<Lobby[]>([]);
   const [agents, setAgents] = useState<MyAgent[]>([]);
 
@@ -45,12 +46,21 @@ export function App() {
   };
 
   useEffect(() => {
-    api.me().then(setMe).catch(() => {});
+    api.me().then(setMe, () => setMe(null));
+  }, []);
+
+  useEffect(() => {
+    if (me === undefined || (isHosted && me === null)) return;
     refresh();
     return api.subscribe((activity) => {
       if (activity.type !== "message") refresh();
     });
-  }, []);
+  }, [me]);
+
+  // The hosted dashboard's own pages: invite links, and sign-in.
+  const invite = location.pathname.match(/^\/invite\/([\w-]+)$/)?.[1];
+  if (isHosted && invite) return me === undefined ? null : <InvitePage invite={invite} me={me} />;
+  if (isHosted && me === null) return <SignInPage />;
 
   const lobbyId = route.match(/^\/lobbies\/([0-9a-f]{64})$/)?.[1];
   const lobby = lobbies.find((l) => l.lobbyId === lobbyId);
@@ -82,10 +92,11 @@ export function App() {
           {me
             ? <a className="user" href={`https://github.com/${me.login}`} target="_blank" rel="noreferrer"><Avatar url={me.avatarUrl} size={24} /><span className="user-login">@{me.login}</span></a>
             : <span className="muted">Not signed in · run <code>agentlobbies login</code></span>}
+          {isHosted && <button className="quiet link-btn" onClick={() => api.signOut().then(() => location.assign("/"))}>Sign out</button>}
         </div>
       </header>
       <main className="main">
-        {lobby ? <LobbyPage lobby={lobby} me={me} agents={agents} onChange={refresh} />
+        {lobby ? <LobbyPage lobby={lobby} me={me ?? null} agents={agents} onChange={refresh} />
           : route === "/agents" ? <AgentsPage agents={agents} />
           : <LobbiesPage lobbies={lobbies} onChange={refresh} />}
       </main>

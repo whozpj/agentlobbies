@@ -8,6 +8,8 @@ import type { AddressInfo } from "node:net";
  * different user, so parallel tests never share one.
  */
 export async function startFakeGitHub(): Promise<{ url: string; server: Server }> {
+  // Who is "signed in to GitHub" in the browser, for the web flow; tests set it with /test/act-as?user=.
+  let browserUser = "tester";
   const server = createServer((req, res) => {
     let body = "";
     req.on("data", (d) => (body += d));
@@ -16,7 +18,19 @@ export async function startFakeGitHub(): Promise<{ url: string; server: Server }
         res.writeHead(status, { "content-type": "application/json" });
         res.end(JSON.stringify(data));
       };
-      const path = new URL(req.url ?? "/", "http://x").pathname;
+      const requestUrl = new URL(req.url ?? "/", "http://x");
+      const path = requestUrl.pathname;
+      if (path === "/test/act-as") {
+        browserUser = requestUrl.searchParams.get("user") ?? "tester";
+        return json(200, {});
+      }
+      if (path === "/login/oauth/authorize") {
+        const back = new URL(requestUrl.searchParams.get("redirect_uri") ?? "");
+        back.searchParams.set("code", `code-${browserUser}`);
+        back.searchParams.set("state", requestUrl.searchParams.get("state") ?? "");
+        res.writeHead(302, { location: back.toString() });
+        return res.end();
+      }
       if (path === "/login/device/code") {
         const clientId = new URLSearchParams(body).get("client_id") ?? "";
         const login = clientId.startsWith("test-") ? clientId.slice("test-".length) : "tester";

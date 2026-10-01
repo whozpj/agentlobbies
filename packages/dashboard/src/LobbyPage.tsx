@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { api, lobbyName, type Agent, type Lobby, type Me, type Message, type MyAgent } from "./api";
+import { api, isHosted, lobbyName, type Agent, type Lobby, type Me, type Message, type MyAgent } from "./api";
 import { MessageFeed } from "./MessageFeed";
 import { Topology } from "./Topology";
-import { Avatar, CopyLink, Modal, StatusDot } from "./ui";
+import { Avatar, CopyLink, InstallSteps, LockIcon, Modal, StatusDot } from "./ui";
 
 const ROLE_LABEL: Record<string, string> = { host: "Owner", member: "Member", observer: "Viewer" };
 
@@ -28,28 +28,77 @@ function InviteModal({ lobby, onClose }: { lobby: Lobby; onClose: () => void }) 
   );
 }
 
+/** Machine and seat together name an agent; the same folder on two machines is two agents. */
+const agentKey = (a: MyAgent) => `${a.machineId ?? "local"}/${a.seatKey}`;
+
+function agentLabel(a: MyAgent): string {
+  const where = a.machine ? ` · on ${a.machine}` : "";
+  return `${a.folder} · ${a.client}${where}${a.online ? "" : " (not running)"}`;
+}
+
 function AddAgentModal({ lobby, agents, onClose }: { lobby: Lobby; agents: MyAgent[]; onClose: () => void }) {
   const available = agents.filter((a) => !a.lobbies.some((l) => l.lobbyId === lobby.lobbyId));
-  const [seatKey, setSeatKey] = useState(available[0]?.seatKey ?? "");
+  const [key, setKey] = useState(available[0] ? agentKey(available[0]) : "");
   const [owns, setOwns] = useState("");
   const [error, setError] = useState("");
-  const add = () => api.addAgent(lobby.lobbyId, seatKey, owns.split(",").map((o) => o.trim()).filter(Boolean)).then(onClose, (e: Error) => setError(e.message));
+  const add = () => {
+    const agent = available.find((a) => agentKey(a) === key);
+    if (!agent) return;
+    api.addAgent(lobby.lobbyId, agent, owns.split(",").map((o) => o.trim()).filter(Boolean)).then(onClose, (e: Error) => setError(e.message));
+  };
   return (
     <Modal title="Add an agent" onClose={onClose}
-      footer={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn primary" disabled={!seatKey} onClick={add}>Add</button></>}>
+      footer={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn primary" disabled={!key} onClick={add}>Add</button></>}>
       <label className="field">
         <span>Agent</span>
         {available.length
-          ? <select value={seatKey} onChange={(e) => setSeatKey(e.target.value)}>
-              {available.map((a) => <option key={a.seatKey} value={a.seatKey}>{a.folder} · {a.client}{a.online ? "" : " (not running)"}</option>)}
+          ? <select value={key} onChange={(e) => setKey(e.target.value)}>
+              {available.map((a) => <option key={agentKey(a)} value={agentKey(a)}>{agentLabel(a)}</option>)}
             </select>
-          : <p className="muted">No agents to add. Start Claude Code or Codex in a project folder first.</p>}
+          : <div className="muted">
+              <p>No agents to add. Start Claude Code or Codex in a project folder{isHosted ? " on a machine with the app installed:" : " first."}</p>
+              {isHosted && <InstallSteps />}
+            </div>}
       </label>
       <label className="field">
         <span>Owns <i className="muted">optional</i></span>
         <input value={owns} placeholder="api, auth" onChange={(e) => setOwns(e.target.value)} />
         <small className="muted">Areas it's responsible for, so others can ask it by area (owner:api).</small>
       </label>
+      {error && <p className="error">{error}</p>}
+    </Modal>
+  );
+}
+
+function PeopleModal({ lobby, me, onClose }: { lobby: Lobby; me: Me | null; onClose: () => void }) {
+  const [error, setError] = useState("");
+  const isOwner = lobby.myRole === "host";
+  // A person has a seat on each of their machines; list them once.
+  const people = [...new Map(lobby.roster.filter((a) => a.client === "cli" && a.owner).map((a) => [a.owner!.login, a])).values()];
+  const remove = (login: string) => {
+    api.removeMember(lobby.lobbyId, login).then(() => {
+      if (login === me?.login) location.hash = "#/";
+      onClose();
+    }, (e: Error) => setError(e.message));
+  };
+  return (
+    <Modal title="People" onClose={onClose} footer={<button className="btn" onClick={onClose}>Done</button>}>
+      <ul className="people-list">
+        {people.map((p) => {
+          const login = p.owner!.login;
+          const self = login === me?.login;
+          return (
+            <li key={login}>
+              <Avatar url={p.owner!.avatarUrl} size={28} />
+              <span>@{login}{self && <span className="muted"> (you)</span>}</span>
+              <span className="tag">{ROLE_LABEL[p.role]}</span>
+              {isOwner && !self && <button className="btn small" onClick={() => remove(login)}>Remove</button>}
+              {!isOwner && self && <button className="btn small" onClick={() => remove(login)}>Leave lobby</button>}
+            </li>
+          );
+        })}
+      </ul>
+      <p className="muted small">Removing someone also removes their agents and gives the lobby a new encryption key.</p>
       {error && <p className="error">{error}</p>}
     </Modal>
   );
@@ -77,11 +126,11 @@ function AgentCard({ agent, selected, onSelect, onRemove }: { agent: Agent; sele
 
 export function LobbyPage({ lobby, me, agents: myAgents, onChange }: { lobby: Lobby; me: Me | null; agents: MyAgent[]; onChange: () => void }) {
   const [messages, setMessages] = useState<Message[]>([]);
-  const [dialog, setDialog] = useState<"invite" | "add" | null>(null);
+  const [dialog, setDialog] = useState<"invite" | "add" | "people" | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const isOwner = lobby.myRole === "host";
   const canAdd = lobby.myRole === "host" || lobby.myRole === "member";
-  const people = lobby.roster.filter((a) => a.client === "cli");
+  const people = [...new Map(lobby.roster.filter((a) => a.client === "cli" && a.owner).map((a) => [a.owner!.login, a])).values()];
   const agents = lobby.roster.filter((a) => a.client !== "cli");
   const close = () => { setDialog(null); onChange(); };
 
@@ -90,9 +139,10 @@ export function LobbyPage({ lobby, me, agents: myAgents, onChange }: { lobby: Lo
     setSelected(null);
     api.messages(lobby.lobbyId).then(setMessages).catch(() => {});
     return api.subscribe((activity) => {
+      if (activity.type === "roster" && isHosted) onChange();
       if (activity.type !== "message" || activity.lobbyId !== lobby.lobbyId) return;
       setMessages((current) => (current.some((m) => m.id === activity.message.id) ? current : [...current, activity.message]));
-    });
+    }, lobby.lobbyId);
   }, [lobby.lobbyId]);
 
   const online = agents.filter((a) => a.status !== "offline").length;
@@ -113,14 +163,17 @@ export function LobbyPage({ lobby, me, agents: myAgents, onChange }: { lobby: Lo
             <span className="stat"><b>{online}/{agents.length}</b> agents online</span>
             <span className="stat"><b>{messages.length}</b> messages</span>
             <span className="stat"><b>{openQuestions}</b> open questions</span>
-            <span className="stat"><StatusDot status={lobby.connection === "live" ? "active" : "idle"} /> relay {lobby.connection}</span>
+            {!isHosted && <span className="stat"><StatusDot status={lobby.connection === "live" ? "active" : "idle"} /> relay {lobby.connection}</span>}
+            {lobby.keyEpoch > 0
+              ? <span className="stat" title="Only member machines can read messages"><LockIcon /> end-to-end encrypted</span>
+              : <span className="stat" title="Created by the first member machine that comes online"><LockIcon /> waiting for a member's machine to make the key</span>}
           </div>
           <div className="actions">
-            <div className="people" aria-label={`${people.length} people`}>
-              {people.map((p) => p.owner && (
-                <span key={p.agentId} title={`@${p.owner.login} · ${ROLE_LABEL[p.role]}`}><Avatar url={p.owner.avatarUrl} size={26} /></span>
+            <button className="people" aria-label={`People (${people.length})`} onClick={() => setDialog("people")}>
+              {people.map((p) => (
+                <span key={p.agentId} title={`@${p.owner!.login} · ${ROLE_LABEL[p.role]}`}><Avatar url={p.owner!.avatarUrl} size={26} /></span>
               ))}
-            </div>
+            </button>
             {isOwner && <button className="btn" onClick={() => setDialog("invite")}>Invite people</button>}
             {canAdd && <button className="btn primary" onClick={() => setDialog("add")}>Add agent</button>}
           </div>
@@ -151,6 +204,7 @@ export function LobbyPage({ lobby, me, agents: myAgents, onChange }: { lobby: Lo
 
       {dialog === "invite" && <InviteModal lobby={lobby} onClose={close} />}
       {dialog === "add" && <AddAgentModal lobby={lobby} agents={myAgents} onClose={close} />}
+      {dialog === "people" && <PeopleModal lobby={lobby} me={me} onClose={close} />}
     </div>
   );
 }

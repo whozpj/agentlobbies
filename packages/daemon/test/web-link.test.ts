@@ -6,7 +6,7 @@ import { Daemon } from "../src/daemon";
 import { agentSession, eventually, freshUser } from "./lobby-helpers";
 
 const relayUrl = inject("relayUrl");
-const ORIGIN = "http://localhost"; // PUBLIC_URL in the relay's test config
+const ORIGIN = inject("publicUrl");
 const running: Daemon[] = [];
 afterEach(async () => { for (const d of running.splice(0)) await d.stop(); });
 

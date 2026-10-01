@@ -65,6 +65,7 @@ async function handleApi(source: DashboardSource, req: IncomingMessage, res: Ser
   const route = `${req.method} ${url.pathname}`;
   const lobby = url.pathname.match(/^\/api\/lobbies\/([0-9a-f]{64})\//)?.[1];
   const agentId = url.pathname.match(/\/agents\/([0-9A-HJKMNP-TV-Z]{26})$/)?.[1];
+  const login = url.pathname.match(/\/members\/([\w-]+)$/)?.[1];
   const body = async () => JSON.parse((await readBody(req)) || "{}") as Record<string, unknown>;
   const reply = async (method: string, params: Record<string, unknown> = {}) => send(res, 200, await source.call(method, params));
 
@@ -78,6 +79,7 @@ async function handleApi(source: DashboardSource, req: IncomingMessage, res: Ser
   if (lobby && route === `POST /api/lobbies/${lobby}/invites`) return reply("invite.create", { ...(await body()), lobbyId: lobby });
   if (lobby && route === `POST /api/lobbies/${lobby}/agents`) return reply("lobby.addAgent", { ...(await body()), lobbyId: lobby });
   if (lobby && agentId && req.method === "DELETE") return reply("lobby.removeAgent", { lobbyId: lobby, agentId });
+  if (lobby && login && req.method === "DELETE") return reply("lobby.removeMember", { lobbyId: lobby, login });
   send(res, 404, { error: "not found" });
 }
 

@@ -80,10 +80,13 @@ export class Machine {
     await this.rpc("lobby.addAgent", { lobbyId, seatKey, handle, owns });
   }
 
+  /** The fake GitHub user this machine signed in as ("<login>.<tag>"); a browser can act as the same one. */
+  githubUser = "";
+
   /** Signs in through the real CLI device flow as a new GitHub user named `login` on the fake GitHub. */
   async login(login: string): Promise<string> {
-    const user = `${login}.${Math.random().toString(36).slice(2, 10)}`;
-    return this.cliWith({ AGENTLOBBIES_GITHUB_CLIENT_ID: `test-${user}` }, this.home, "login", "--no-open");
+    this.githubUser = `${login}.${Math.random().toString(36).slice(2, 10)}`;
+    return this.cliWith({ AGENTLOBBIES_GITHUB_CLIENT_ID: `test-${this.githubUser}` }, this.home, "login", "--no-open");
   }
 
   async agent(client: "claude-code" | "codex", cwd = mkdtempSync(join(tmpdir(), `${client}-`))): Promise<Agent> {
@@ -91,12 +94,6 @@ export class Machine {
     const mcp = new Client({ name: client, version: "1.0.0" });
     await mcp.connect(transport);
     return new Agent(mcp, cwd);
-  }
-
-  /** The human approves every pending join, as `agentlobbies approve` would. */
-  async approveAll(): Promise<void> {
-    const listing = await this.cli(this.home, "approve");
-    for (const [id] of listing.matchAll(/\b[0-9A-HJKMNP-TV-Z]{26}\b/g)) await this.cli(this.home, "approve", id);
   }
 }
 

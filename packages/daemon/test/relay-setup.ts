@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdtempSync } from "node:fs";
+import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { TestProject } from "vitest/node";
@@ -10,8 +11,19 @@ import { startFakeGitHub } from "./fake-github";
 declare module "vitest" {
   export interface ProvidedContext {
     relayUrl: string;
+    publicUrl: string;
     githubUrl: string;
   }
+}
+
+/** A port nothing is using, so the relay's PUBLIC_URL can name it before the relay starts. */
+function freePort(): Promise<number> {
+  return new Promise((resolvePort) => {
+    const server = createServer().listen(0, "127.0.0.1", () => {
+      const { port } = server.address() as AddressInfo;
+      server.close(() => resolvePort(port));
+    });
+  });
 }
 
 /** Runs the real relay locally (wrangler dev) for the daemon's integration tests. */
@@ -24,11 +36,17 @@ export default async function setup(project: TestProject) {
 
   const github = await startFakeGitHub();
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  // Browsers treat localhost as secure, so the hosted dashboard's Secure cookies work over http here.
+  const port = await freePort();
+  const publicUrl = `http://localhost:${port}`;
   const worker = await unstable_dev(join(relayDir, "src/worker.ts"), {
     config: join(relayDir, "wrangler.toml"),
     env: "test",
     persistTo,
+    port,
+    ip: "127.0.0.1",
     vars: {
+      PUBLIC_URL: publicUrl,
       JWT_PRIVATE_KEY: privateKey.export({ format: "pem", type: "pkcs8" }).toString(),
       JWT_PUBLIC_KEYS: JSON.stringify({ k1: publicKey.export({ format: "pem", type: "spki" }).toString() }),
       IP_HASH_SALT: randomBytes(32).toString("hex"),
@@ -40,6 +58,7 @@ export default async function setup(project: TestProject) {
   });
 
   project.provide("relayUrl", `http://${worker.address}:${worker.port}`);
+  project.provide("publicUrl", publicUrl);
   project.provide("githubUrl", github.url);
   return async () => {
     await worker.stop();

@@ -313,6 +313,25 @@ p { margin: 0; }
 
 @keyframes enter { from { opacity: 0; transform: translateY(-6px); } }
 
+/* Hosted pages: sign-in and invites */
+
+.welcome { flex: 1; display: grid; place-items: center; padding: 32px 16px; min-height: 100vh; background-image: radial-gradient(var(--grid) 1px, transparent 1px); background-size: 22px 22px; }
+.welcome-card { width: min(480px, 100%); display: grid; gap: 14px; justify-items: center; text-align: center; padding: 36px 28px; background: var(--surface); border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow); }
+.welcome-card .logo { width: 44px; height: 44px; }
+.welcome-card h1 { font-size: 24px; }
+.btn.big { padding: 11px 22px; font-size: 15px; }
+.btn.small { padding: 4px 10px; font-size: 12px; margin-left: auto; }
+.small { font-size: 12px; }
+.next { width: 100%; text-align: left; border-top: 1px solid var(--border); padding-top: 14px; margin-top: 4px; }
+.install { margin: 8px 0 0; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; overflow-x: auto; text-align: left; }
+.lock { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.6; vertical-align: -1px; margin-right: 2px; }
+.link-btn { background: none; border: 0; font: inherit; cursor: pointer; padding: 0; }
+.msg-body.locked { color: var(--muted); font-size: 13px; }
+
+.people { background: none; border: 0; padding: 0; cursor: pointer; }
+.people-list { list-style: none; margin: 0 0 12px; padding: 0; display: grid; gap: 10px; }
+.people-list li { display: flex; align-items: center; gap: 10px; }
+
 @media (max-width: 900px) {
   .topbar { padding: 0 16px; gap: 10px; }
   .nav, .quiet { display: none; }

@@ -1,4 +1,5 @@
 import type { Message } from "./api";
+import { LockIcon } from "./ui";
 
 const TYPE_LABEL: Record<Message["type"], string> = { question: "Q", answer: "A", update: "update" };
 
@@ -18,7 +19,9 @@ function Thread({ message, replies }: { message: Message; replies: Map<string, M
           <span className="muted">→ {message.to}</span>
           <time className="muted">{new Date(message.committedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
         </div>
-        <p className="msg-body">{message.body}</p>
+        {message.body === null
+          ? <p className="msg-body locked"><LockIcon /> Encrypted. Run <code>agentlobbies dashboard</code> on your machine to read it.</p>
+          : <p className="msg-body">{message.body}</p>}
         {waiting && <span className="waiting">awaiting answer</span>}
       </article>
       {children.length > 0 && (

@@ -19,6 +19,7 @@
     "zod": "^3.25.0"
   },
   "devDependencies": {
+    "@agentlobbies/dashboard": "workspace:*",
     "@cloudflare/vitest-pool-workers": "^0.22.0",
     "fast-check": "^4.10.0",
     "typescript": "^5.9.0",

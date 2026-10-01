@@ -313,6 +313,7 @@ export class Daemon extends EventEmitter {
           myRole: seats.find((s) => s.seat_key === PERSON)?.role ?? null,
           local: seats.filter((s) => s.seat_key !== PERSON).map((s) => ({ handle: s.handle, agentId: s.agent_id, seatKey: s.seat_key })),
           connection: this.connections.get(view.seat_id)?.state ?? "stopped",
+          keyEpoch: this.db.latestLobbyKey(lobbyId)?.epoch ?? 0,
           roster: this.db.roster(view.seat_id),
         };
       });
