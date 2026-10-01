@@ -31,11 +31,12 @@ describe("dashboard in a real browser", () => {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
     await page.goto(url);
 
-    await pwExpect(page.getByRole("button", { name: "@whozpj" })).toBeVisible();
+    await pwExpect(page.getByRole("link", { name: "@whozpj" })).toBeVisible();
     await page.getByRole("link", { name: "My agents" }).click();
     await pwExpect(page.getByRole("cell", { name: "running" })).toBeVisible();
 
-    await page.getByRole("link", { name: "food-app" }).first().click();
+    await page.getByRole("link", { name: "Lobbies", exact: true }).click();
+    await page.getByRole("link", { name: "food-app" }).click();
     await page.getByRole("button", { name: "Invite people" }).click();
     await page.getByRole("button", { name: "Create invite link" }).click();
     await pwExpect(page.getByText(/\/invite\/[\w-]{20,}/)).toBeVisible();
@@ -56,10 +57,10 @@ describe("dashboard in a real browser", () => {
       await web.tool("lobby_reply", { messageId: (await web.until("lobby_inbox", "ISO 8601")).match(/id (\w{26})/)![1], answer: "Yes, estimatedArrival is ISO 8601 in UTC." });
       await pwExpect(page.getByTestId("message").filter({ hasText: "ISO 8601 in UTC" })).toBeVisible({ timeout: 15_000 });
       await page.waitForTimeout(800);
-      await page.screenshot({ path: `${SCREENSHOTS}/dashboard-light.png`, fullPage: true });
-      await page.getByRole("button", { name: "Dark mode" }).click();
+      await page.screenshot({ path: `${SCREENSHOTS}/dashboard-dark.png` });
+      await page.getByRole("button", { name: "Light mode" }).click();
       await page.waitForTimeout(300);
-      await page.screenshot({ path: `${SCREENSHOTS}/dashboard-dark.png`, fullPage: true });
+      await page.screenshot({ path: `${SCREENSHOTS}/dashboard-light.png` });
     }
 
     await page.getByRole("button", { name: "Remove web-claude" }).click();

@@ -1,30 +1,47 @@
-import Badge from "@cloudscape-design/components/badge";
-import Box from "@cloudscape-design/components/box";
 import type { Message } from "./api";
 
-const BADGE_COLORS: Record<Message["type"], "blue" | "green" | "grey"> = { question: "blue", answer: "green", update: "grey" };
+const TYPE_LABEL: Record<Message["type"], string> = { question: "Q", answer: "A", update: "update" };
 
-export function MessageFeed({ messages }: { messages: Message[] }) {
-  const byId = new Map(messages.map((m) => [m.id, m]));
-  if (messages.length === 0) return <Box color="text-status-inactive">No messages yet. When agents talk, it shows up here live.</Box>;
+function latest(m: Message, replies: Map<string, Message[]>): number {
+  return Math.max(m.committedAt, ...(replies.get(m.id) ?? []).map((r) => latest(r, replies)));
+}
+
+function Thread({ message, replies }: { message: Message; replies: Map<string, Message[]> }) {
+  const children = replies.get(message.id) ?? [];
+  const waiting = message.type === "question" && children.length === 0;
   return (
-    <ol className="feed">
-      {[...messages].reverse().map((m) => {
-        const parent = m.inReplyTo ? byId.get(m.inReplyTo) : undefined;
-        return (
-          <li key={m.id} className="feed-item" data-testid="message">
-            <div className="feed-meta">
-              <Badge color={BADGE_COLORS[m.type]}>{m.type}</Badge>
-              <b>{m.from}</b>
-              <span className="feed-arrow">→</span>
-              <span>{m.to}</span>
-              <Box variant="small" color="text-status-inactive">{new Date(m.committedAt).toLocaleTimeString()}</Box>
-            </div>
-            {parent && <Box variant="small" color="text-status-inactive">↳ reply to “{parent.body.slice(0, 80)}”</Box>}
-            <div className="feed-body">{m.body}</div>
-          </li>
-        );
-      })}
-    </ol>
+    <div className="thread">
+      <article className={`msg ${message.type}`} data-testid="message">
+        <div className="msg-meta">
+          <span className={`type ${message.type}`}>{TYPE_LABEL[message.type]}</span>
+          <b>{message.from}</b>
+          <span className="muted">→ {message.to}</span>
+          <time className="muted">{new Date(message.committedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
+        </div>
+        <p className="msg-body">{message.body}</p>
+        {waiting && <span className="waiting">awaiting answer</span>}
+      </article>
+      {children.length > 0 && (
+        <div className="replies">
+          {children.map((r) => <Thread key={r.id} message={r} replies={replies} />)}
+        </div>
+      )}
+    </div>
   );
+}
+
+/** Messages grouped into threads, the most recently active thread first. */
+export function MessageFeed({ messages }: { messages: Message[] }) {
+  if (messages.length === 0) return <p className="muted feed-empty">No messages yet. When agents talk, it shows up here live.</p>;
+
+  const ids = new Set(messages.map((m) => m.id));
+  const replies = new Map<string, Message[]>();
+  const roots: Message[] = [];
+  for (const m of messages) {
+    if (m.inReplyTo && ids.has(m.inReplyTo)) replies.set(m.inReplyTo, [...(replies.get(m.inReplyTo) ?? []), m]);
+    else roots.push(m);
+  }
+  roots.sort((a, b) => latest(b, replies) - latest(a, replies));
+
+  return <div className="feed">{roots.map((m) => <Thread key={m.id} message={m} replies={replies} />)}</div>;
 }

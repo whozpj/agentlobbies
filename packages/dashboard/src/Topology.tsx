@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { Agent, Message } from "./api";
 
-const WIDTH = 820;
-const HEIGHT = 300;
-const TYPE_COLORS: Record<Message["type"], string> = { question: "#0972d3", answer: "#037f0c", update: "#d97706" };
+const WIDTH = 1000;
+const HEIGHT = 560;
+const HUB = { x: WIDTH / 2, y: HEIGHT / 2 };
+const TYPE_COLORS: Record<Message["type"], string> = { question: "var(--question)", answer: "var(--answer)", update: "var(--update)" };
 
 interface Point {
   x: number;
@@ -20,9 +21,8 @@ interface Pulse {
 function layout(agents: Agent[]): Map<string, Point> {
   const positions = new Map<string, Point>();
   agents.forEach((agent, i) => {
-    const angle = Math.PI + (2 * Math.PI * i) / Math.max(agents.length, 1);
-    const spread = agents.length === 1 ? 0 : 1;
-    positions.set(agent.handle, { x: WIDTH / 2 + spread * 300 * Math.cos(angle), y: HEIGHT / 2 + spread * 105 * Math.sin(angle) });
+    const angle = Math.PI + (2 * Math.PI * i) / agents.length;
+    positions.set(agent.handle, { x: HUB.x + 380 * Math.cos(angle), y: HUB.y + 200 * Math.sin(angle) });
   });
   return positions;
 }
@@ -32,8 +32,26 @@ function recipients(message: Message, agents: Agent[]): string[] {
   return [message.to];
 }
 
-/** Agents as nodes; each new message animates from sender to recipients, colored by type. */
-export function Topology({ agents, latest }: { agents: Agent[]; latest: Message | undefined }) {
+function Node({ agent, at, speaking, selected, onSelect }: { agent: Agent; at: Point; speaking: boolean; selected: boolean; onSelect: () => void }) {
+  const person = agent.client === "cli";
+  const sublabel = person ? "person" : [agent.owner && `@${agent.owner.login}`, agent.client].filter(Boolean).join(" · ");
+  const classes = ["node", agent.status, person && "person", selected && "selected"].filter(Boolean).join(" ");
+  return (
+    <g transform={`translate(${at.x} ${at.y})`} className={classes} data-testid={`node-${agent.handle}`} role="button" aria-label={`Show messages for ${agent.handle}`} onClick={onSelect}>
+      {speaking && <circle r={30} className="node-ring" />}
+      <circle r={person ? 20 : 26} className="node-body" />
+      {person && agent.owner
+        ? <image href={agent.owner.avatarUrl} x={-18} y={-18} width={36} height={36} clipPath="url(#avatar-clip)" />
+        : <text className="node-initials" textAnchor="middle" dy="0.35em">{agent.handle.slice(0, 2).toUpperCase()}</text>}
+      {!person && <circle cx={19} cy={-19} r={5} className="node-status" />}
+      <text className="node-label" textAnchor="middle" y={person ? 38 : 46}>{agent.handle}</text>
+      <text className="node-sublabel" textAnchor="middle" y={person ? 53 : 61}>{sublabel}</text>
+    </g>
+  );
+}
+
+/** Everyone around the lobby's relay; each message travels sender → relay → recipients, colored by type. */
+export function Topology({ agents, latest, selected, onSelect }: { agents: Agent[]; latest: Message | undefined; selected: string | null; onSelect: (handle: string) => void }) {
   const positions = layout(agents);
   const [pulses, setPulses] = useState<Pulse[]>([]);
   const [speaking, setSpeaking] = useState<string | undefined>();
@@ -53,47 +71,40 @@ export function Topology({ agents, latest }: { agents: Agent[]; latest: Message 
     const timer = setTimeout(() => {
       setPulses((current) => current.filter((p) => !added.includes(p)));
       setSpeaking(undefined);
-    }, 1400);
+    }, 1700);
     return () => clearTimeout(timer);
   }, [latest]);
 
   return (
     <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="topology" role="img" aria-label="Lobby topology">
-      {agents.flatMap((a, i) =>
-        agents.slice(i + 1).map((b) => {
-          const p = positions.get(a.handle)!;
-          const q = positions.get(b.handle)!;
-          return <line key={`${a.handle}-${b.handle}`} x1={p.x} y1={p.y} x2={q.x} y2={q.y} className="topology-edge" />;
-        }),
-      )}
+      <defs>
+        <clipPath id="avatar-clip"><circle r={18} /></clipPath>
+      </defs>
+      {agents.map((a) => {
+        const p = positions.get(a.handle)!;
+        return <line key={a.agentId} x1={HUB.x} y1={HUB.y} x2={p.x} y2={p.y} className="spoke" />;
+      })}
       {pulses.map((pulse) => (
         <g key={pulse.key}>
-          <line x1={pulse.from.x} y1={pulse.from.y} x2={pulse.to.x} y2={pulse.to.y} stroke={pulse.color} className="topology-trail" />
+          <polyline points={`${pulse.from.x},${pulse.from.y} ${HUB.x},${HUB.y} ${pulse.to.x},${pulse.to.y}`} className="trail" style={{ stroke: pulse.color }} />
           <circle
-            r={7}
-            fill={pulse.color}
-            className="topology-pulse"
+            r={6}
+            className="pulse"
             data-testid="pulse"
-            style={{ "--x1": `${pulse.from.x}px`, "--y1": `${pulse.from.y}px`, "--x2": `${pulse.to.x}px`, "--y2": `${pulse.to.y}px` } as React.CSSProperties}
+            style={{ fill: pulse.color, color: pulse.color, "--x1": `${pulse.from.x}px`, "--y1": `${pulse.from.y}px`, "--x2": `${pulse.to.x}px`, "--y2": `${pulse.to.y}px` } as React.CSSProperties}
           />
         </g>
       ))}
-      {agents.map((agent) => {
-        const { x, y } = positions.get(agent.handle)!;
-        const offline = agent.status === "offline";
-        return (
-          <g key={agent.agentId} transform={`translate(${x} ${y})`} className={offline ? "topology-node offline" : "topology-node"} data-testid={`node-${agent.handle}`}>
-            {speaking === agent.handle && <circle r={34} className="topology-ring" />}
-            <circle r={26} className="topology-node-body" />
-            <text className="topology-initials" textAnchor="middle" dy="0.35em">{agent.handle.slice(0, 2).toUpperCase()}</text>
-            <circle cx={19} cy={-19} r={6} className={`topology-status ${agent.status}`} />
-            <text className="topology-label" textAnchor="middle" y={44}>{agent.handle}</text>
-            <text className="topology-sublabel" textAnchor="middle" y={60}>
-              {[agent.owner && `@${agent.owner.login}`, agent.client, agent.owns.join(", ")].filter(Boolean).join(" · ")}
-            </text>
-          </g>
-        );
-      })}
+      <g transform={`translate(${HUB.x} ${HUB.y})`} className="hub">
+        {pulses.length > 0 && <circle key={seen.current} r={34} className="hub-ring" />}
+        <circle r={34} className="hub-body" />
+        <path d="M-9 -9 0 -14 9 -9 9 1 0 6 -9 1Z M0 6v8" className="hub-glyph" />
+        <text textAnchor="middle" y={56} className="node-sublabel">relay</text>
+      </g>
+      {agents.map((agent) => (
+        <Node key={agent.agentId} agent={agent} at={positions.get(agent.handle)!} speaking={speaking === agent.handle}
+          selected={selected === agent.handle} onSelect={() => onSelect(agent.handle)} />
+      ))}
     </svg>
   );
 }

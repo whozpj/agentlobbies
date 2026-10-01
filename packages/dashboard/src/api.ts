@@ -79,3 +79,5 @@ export const api = {
     return () => events.close();
   },
 };
+
+export const lobbyName = (l: Lobby) => l.name ?? l.lobbyId.slice(0, 8);

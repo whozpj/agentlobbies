@@ -1,13 +1,9 @@
-import { applyMode, Mode } from "@cloudscape-design/global-styles";
-import AppLayout from "@cloudscape-design/components/app-layout";
-import BreadcrumbGroup from "@cloudscape-design/components/breadcrumb-group";
-import SideNavigation from "@cloudscape-design/components/side-navigation";
-import TopNavigation from "@cloudscape-design/components/top-navigation";
 import { useEffect, useState } from "react";
 import { AgentsPage } from "./AgentsPage";
-import { api, type Lobby, type Me, type MyAgent } from "./api";
+import { api, lobbyName, type Lobby, type Me, type MyAgent } from "./api";
 import { LobbiesPage } from "./LobbiesPage";
 import { LobbyPage } from "./LobbyPage";
+import { Avatar, Logo } from "./ui";
 
 function useHashRoute(): string {
   const [route, setRoute] = useState(location.hash.slice(1) || "/");
@@ -19,17 +15,29 @@ function useHashRoute(): string {
   return route;
 }
 
+function useTheme(): [string, () => void] {
+  const [theme, setTheme] = useState(() => {
+    try {
+      return localStorage.getItem("agentlobbies-theme") ?? "dark";
+    } catch {
+      return "dark";
+    }
+  });
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      localStorage.setItem("agentlobbies-theme", theme);
+    } catch {}
+  }, [theme]);
+  return [theme, () => setTheme(theme === "dark" ? "light" : "dark")];
+}
+
 export function App() {
   const route = useHashRoute();
-  const [dark, setDark] = useState(() => localStorage.getItem("agentlobbies-dark") === "1");
+  const [theme, toggleTheme] = useTheme();
   const [me, setMe] = useState<Me | null>(null);
   const [lobbies, setLobbies] = useState<Lobby[]>([]);
   const [agents, setAgents] = useState<MyAgent[]>([]);
-
-  useEffect(() => {
-    applyMode(dark ? Mode.Dark : Mode.Light);
-    localStorage.setItem("agentlobbies-dark", dark ? "1" : "0");
-  }, [dark]);
 
   const refresh = () => {
     api.lobbies().then(setLobbies).catch(() => {});
@@ -46,48 +54,41 @@ export function App() {
 
   const lobbyId = route.match(/^\/lobbies\/([0-9a-f]{64})$/)?.[1];
   const lobby = lobbies.find((l) => l.lobbyId === lobbyId);
-  const lobbyName = (l: Lobby) => l.name ?? l.lobbyId.slice(0, 8);
-
-  const breadcrumbs = [{ text: "Agent Lobbies", href: "#/" }];
-  if (lobby) breadcrumbs.push({ text: lobbyName(lobby), href: `#/lobbies/${lobby.lobbyId}` });
-  if (route === "/agents") breadcrumbs.push({ text: "My agents", href: "#/agents" });
+  const online = agents.filter((a) => a.online).length;
 
   return (
-    <>
-      <div id="top-nav">
-        <TopNavigation
-          identity={{ href: "#/", title: "Agent Lobbies" }}
-          utilities={[
-            { type: "button", text: dark ? "Light mode" : "Dark mode", onClick: () => setDark(!dark) },
-            { type: "button", text: "Docs", href: "https://github.com/whozpj/agentlobbies#readme", external: true },
-            me
-              ? { type: "menu-dropdown", text: `@${me.login}`, iconUrl: me.avatarUrl, items: [{ id: "github", text: "GitHub profile", href: `https://github.com/${me.login}`, external: true }] }
-              : { type: "button", text: "Not signed in: run agentlobbies login" },
-          ]}
-        />
-      </div>
-      <AppLayout
-        headerSelector="#top-nav"
-        toolsHide
-        breadcrumbs={<BreadcrumbGroup items={breadcrumbs} />}
-        navigation={
-          <SideNavigation
-            activeHref={`#${route}`}
-            header={{ text: "Agent Lobbies", href: "#/" }}
-            items={[
-              { type: "link", text: "Lobbies", href: "#/" },
-              { type: "link", text: "My agents", href: "#/agents", info: <span data-testid="agent-count">{agents.filter((a) => a.online).length} online</span> },
-              { type: "divider" },
-              ...lobbies.map((l) => ({ type: "link" as const, text: lobbyName(l), href: `#/lobbies/${l.lobbyId}` })),
-            ]}
-          />
-        }
-        content={
-          lobby ? <LobbyPage lobby={lobby} me={me} agents={agents} onChange={refresh} />
-            : route === "/agents" ? <AgentsPage agents={agents} />
-            : <LobbiesPage lobbies={lobbies} onChange={refresh} />
-        }
-      />
-    </>
+    <div className="app">
+      <header className="topbar">
+        <a href="#/" className="brand"><Logo /><span className="brand-name">agentlobbies</span></a>
+        {lobby && (
+          <>
+            <span className="crumb-sep">/</span>
+            <select className="switcher" aria-label="Switch lobby" value={lobby.lobbyId} onChange={(e) => (location.hash = `#/lobbies/${e.target.value}`)}>
+              {lobbies.map((l) => <option key={l.lobbyId} value={l.lobbyId}>{lobbyName(l)}</option>)}
+            </select>
+          </>
+        )}
+        <nav className="nav">
+          <a href="#/" className={!lobby && route !== "/agents" ? "active" : ""}>Lobbies</a>
+          <a href="#/agents" className={route === "/agents" ? "active" : ""}>
+            My agents <span className="count" data-testid="agent-count">{online}</span>
+          </a>
+        </nav>
+        <div className="topbar-right">
+          <button className="icon-btn" aria-label={theme === "dark" ? "Light mode" : "Dark mode"} onClick={toggleTheme}>
+            {theme === "dark" ? "☀" : "☾"}
+          </button>
+          <a className="quiet" href="https://github.com/whozpj/agentlobbies#readme" target="_blank" rel="noreferrer">Docs</a>
+          {me
+            ? <a className="user" href={`https://github.com/${me.login}`} target="_blank" rel="noreferrer"><Avatar url={me.avatarUrl} size={24} /><span className="user-login">@{me.login}</span></a>
+            : <span className="muted">Not signed in · run <code>agentlobbies login</code></span>}
+        </div>
+      </header>
+      <main className="main">
+        {lobby ? <LobbyPage lobby={lobby} me={me} agents={agents} onChange={refresh} />
+          : route === "/agents" ? <AgentsPage agents={agents} />
+          : <LobbiesPage lobbies={lobbies} onChange={refresh} />}
+      </main>
+    </div>
   );
 }
