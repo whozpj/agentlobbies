@@ -3,8 +3,9 @@ import type { AddressInfo } from "node:net";
 
 /**
  * Just enough of github.com and api.github.com for sign-in tests. The device flow approves at once.
- * A client id "test-<login>" signs in as <login> (otherwise "tester"), so parallel tests never share
- * state. A token "gho_fake_<login>" belongs to <login>.
+ * A client id "test-<login>" signs in as <login> (otherwise "tester"). A token "gho_fake_<login>"
+ * belongs to <login>. Either may end in ".<tag>": the login stays the same, but the tag makes a
+ * different user, so parallel tests never share one.
  */
 export async function startFakeGitHub(): Promise<{ url: string; server: Server }> {
   const server = createServer((req, res) => {
@@ -22,13 +23,17 @@ export async function startFakeGitHub(): Promise<{ url: string; server: Server }
         return json(200, { device_code: `device-${login}`, user_code: "WDJB-MJHT", verification_uri: `${url}/login/device`, expires_in: 900, interval: 0 });
       }
       if (path === "/login/oauth/access_token") {
-        const deviceCode = new URLSearchParams(body).get("device_code") ?? JSON.parse(body || "{}").device_code;
-        return json(200, { access_token: `gho_fake_${String(deviceCode).replace(/^device-/, "")}`, token_type: "bearer", scope: "" });
+        const form = new URLSearchParams(body);
+        const parsed = body.startsWith("{") ? JSON.parse(body) : {};
+        // The device flow sends a device code; the web flow sends "code-<login>".
+        const code = String(form.get("device_code") ?? parsed.device_code ?? parsed.code ?? "");
+        return json(200, { access_token: `gho_fake_${code.replace(/^(device|code)-/, "")}`, token_type: "bearer", scope: "" });
       }
       if (path === "/user") {
-        const login = (req.headers.authorization ?? "").match(/gho_fake_([\w-]+)/)?.[1];
-        if (!login) return json(401, { message: "Bad credentials" });
-        const id = [...login].reduce((n, c) => n * 31 + c.charCodeAt(0), 7) % 1_000_000_000;
+        const user = (req.headers.authorization ?? "").match(/gho_fake_([\w.-]+)/)?.[1];
+        if (!user) return json(401, { message: "Bad credentials" });
+        const login = user.split(".")[0];
+        const id = [...user].reduce((n, c) => n * 31 + c.charCodeAt(0), 7) % 1_000_000_000;
         return json(200, { id, login, avatar_url: `https://avatars.githubusercontent.com/u/${id}` });
       }
       json(404, { message: "Not Found" });

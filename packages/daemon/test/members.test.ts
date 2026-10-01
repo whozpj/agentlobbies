@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, inject, it } from "vitest";
 import { Daemon } from "../src/daemon";
+import { freshUser } from "./lobby-helpers";
 
 const relayUrl = inject("relayUrl");
 const running: Daemon[] = [];
@@ -12,7 +13,7 @@ async function startDaemon(login = "tester") {
   const daemon = new Daemon({ home: mkdtempSync(join(tmpdir(), "al-home-")), relayUrl });
   await daemon.start();
   running.push(daemon);
-  await daemon.call("account.login", { githubToken: `gho_fake_${login}` });
+  await daemon.call("account.login", { githubToken: freshUser(login) });
   return daemon;
 }
 

@@ -27,6 +27,19 @@ describe("Envelope", () => {
     expect(Envelope.safeParse(envelope).success).toBe(true);
   });
 
+  it("accepts a v2 envelope that carries only sealed content", () => {
+    const { body: _, ...rest } = envelope;
+    expect(Envelope.safeParse({ ...rest, v: 2, sealed: { epoch: 1, iv: "aXY", data: "Y2lwaGVy" } }).success).toBe(true);
+  });
+
+  it("rejects a v2 envelope with a readable body, and a v1 envelope without one", () => {
+    const sealed = { epoch: 1, iv: "aXY", data: "Y2lwaGVy" };
+    expect(Envelope.safeParse({ ...envelope, v: 2, sealed }).success).toBe(false);
+    const { body: _, ...rest } = envelope;
+    expect(Envelope.safeParse({ ...rest, v: 2 }).success).toBe(false);
+    expect(Envelope.safeParse({ ...rest, v: 1, sealed }).success).toBe(false);
+  });
+
   it("rejects an empty body", () => {
     expect(Envelope.safeParse({ ...envelope, body: "" }).success).toBe(false);
   });

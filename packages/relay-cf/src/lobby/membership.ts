@@ -70,10 +70,10 @@ function insertAgent(storage: DurableObjectStorage, agent: NewAgent, handle: str
   return { profile, joined };
 }
 
-/** Creates the lobby: schema, metadata, the host, and its first two events. */
+/** Creates the lobby: schema, metadata, and the host if there is one. */
 export function initLobby(
   storage: DurableObjectStorage,
-  args: { lobbyId: string; host: NewAgent; settings: Partial<LobbySettings>; now: number },
+  args: { lobbyId: string; host?: NewAgent; settings: Partial<LobbySettings>; now: number },
 ): void {
   storage.transactionSync(() => {
     migrate(storage.sql);
@@ -82,8 +82,8 @@ export function initLobby(
     setMeta(storage.sql, "created_at", args.now);
     setMeta(storage.sql, "min_retained_seq", 1);
     setMeta(storage.sql, "settings", JSON.stringify(LobbySettings.parse(args.settings)));
-    commit(storage, { kind: "system", system: { type: "lobby_created", hostId: args.host.agentId } }, {}, args.now);
-    insertAgent(storage, args.host, args.host.handle, "host", args.now);
+    commit(storage, { kind: "system", system: { type: "lobby_created", ...(args.host ? { hostId: args.host.agentId } : {}) } }, {}, args.now);
+    if (args.host) insertAgent(storage, args.host, args.host.handle, "host", args.now);
   });
 }
 

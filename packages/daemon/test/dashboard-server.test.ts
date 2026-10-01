@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, inject, it } from "vitest";
 import { Daemon } from "../src/daemon";
-import { agentSession } from "./lobby-helpers";
+import { agentSession, freshUser } from "./lobby-helpers";
 
 const relayUrl = inject("relayUrl");
 const running: Daemon[] = [];
@@ -18,7 +18,7 @@ async function setup() {
   const daemon = new Daemon({ home: mkdtempSync(join(tmpdir(), "al-home-")), relayUrl, dashboardDir: staticDir });
   await daemon.start();
   running.push(daemon);
-  await daemon.call("account.login", { githubToken: "gho_fake_tester" });
+  await daemon.call("account.login", { githubToken: freshUser("tester") });
   const { sessionId } = await daemon.call("session.open", { client: "person", cwd: tmpdir() });
   const host = (method: string, params: Record<string, unknown> = {}) => daemon.call(method, { sessionId, ...params });
   await daemon.call("lobby.create", { name: "food-app" });

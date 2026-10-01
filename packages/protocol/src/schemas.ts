@@ -50,8 +50,16 @@ export const Attachment = z.object({
 
 export const MessageType = z.enum(["question", "answer", "update"]);
 
+/** A body and attachments encrypted with the lobby key of `epoch` (LLD 15.5). */
+export const Sealed = z.object({
+  epoch: z.number().int().positive(),
+  iv: B64u,
+  data: B64u.max(LIMITS.maxSealedChars),
+});
+
+/** v1 carries `body` in the clear (history from before v0.4); v2 carries only `sealed`. */
 export const Envelope = z.object({
-  v: z.literal(1),
+  v: z.union([z.literal(1), z.literal(2)]),
   id: Ulid,
   lobbyId: LobbyId,
   from: Ulid,
@@ -59,11 +67,26 @@ export const Envelope = z.object({
   type: MessageType,
   inReplyTo: Ulid.optional(),
   threadDepth: z.number().int().min(0).max(LIMITS.maxThreadDepthCeiling),
-  body: z.string().min(1),
+  body: z.string().min(1).optional(),
   attachments: z.array(Attachment).max(LIMITS.maxAttachmentsPerEnvelope).optional(),
+  sealed: Sealed.optional(),
   requiresApproval: z.boolean().optional(),
   createdAt: Ms,
   sig: B64u,
+}).refine(
+  (e) => (e.v === 1 ? e.body !== undefined && !e.sealed : e.sealed !== undefined && e.body === undefined && e.attachments === undefined),
+  { message: "a v1 envelope carries a body; a v2 envelope carries only sealed content" },
+);
+
+/** What the relay can show about a message without reading it (LLD 15.1). */
+export const MessageMeta = z.object({
+  id: Ulid,
+  seq: Seq,
+  from: z.string(),
+  to: z.string(),
+  type: MessageType,
+  inReplyTo: Ulid.nullable(),
+  committedAt: Ms,
 });
 
 export const BoardEntry = z.object({
@@ -88,7 +111,7 @@ export const LobbySettings = z.object({
 export const RejectReason = z.enum(["rejected_by_host", "sender_inactive", "recipient_inactive", "parent_missing", "thread_too_deep"]);
 
 export const SystemEvent = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("lobby_created"), hostId: Ulid }),
+  z.object({ type: z.literal("lobby_created"), hostId: Ulid.optional() }),
   z.object({ type: z.literal("joined"), agent: AgentProfile }),
   z.object({ type: z.literal("left"), agentId: Ulid, reason: z.enum(["left", "kicked", "never_connected"]) }),
   z.object({ type: z.literal("role_changed"), agentId: Ulid, role: Role, by: Ulid }),
@@ -112,6 +135,8 @@ export type JoinProfile = z.infer<typeof JoinProfile>;
 export type Recipient = z.infer<typeof Recipient>;
 export type Attachment = z.infer<typeof Attachment>;
 export type Envelope = z.infer<typeof Envelope>;
+export type Sealed = z.infer<typeof Sealed>;
+export type MessageMeta = z.infer<typeof MessageMeta>;
 export type BoardEntry = z.infer<typeof BoardEntry>;
 export type LobbySettings = z.infer<typeof LobbySettings>;
 export type RejectReason = z.infer<typeof RejectReason>;

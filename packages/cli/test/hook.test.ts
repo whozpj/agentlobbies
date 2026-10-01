@@ -38,7 +38,7 @@ async function addToLobby(seatKey: string, handle: string) {
 beforeAll(async () => {
   process.env.AGENTLOBBIES_RELAY_URL = inject("relayUrl");
   web = await openSession({ client: "claude-code", cwd: webDir, home });
-  await web.call("account.login", { githubToken: "gho_fake_tester" });
+  await web.call("account.login", { githubToken: `gho_fake_tester.${Math.random().toString(36).slice(2, 10)}` });
   api = await openSession({ client: "codex", cwd: mkdtempSync(join(tmpdir(), "api-")), home });
   ({ lobbyId } = await web.call("lobby.create", { name: "hooks" }));
   await addToLobby((await web.call("session.open", { client: "claude-code", cwd: webDir })).seatKey, "web");

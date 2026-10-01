@@ -20,7 +20,7 @@ async function startDaemon() {
   const daemon = new Daemon({ home: mkdtempSync(join(tmpdir(), "al-home-")), relayUrl: inject("relayUrl") });
   await daemon.start();
   daemons.push(daemon);
-  await daemon.call("account.login", { githubToken: "gho_fake_tester" });
+  await daemon.call("account.login", { githubToken: `gho_fake_tester.${Math.random().toString(36).slice(2, 10)}` });
   return daemon;
 }
 

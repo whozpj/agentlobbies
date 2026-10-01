@@ -80,9 +80,10 @@ export class Machine {
     await this.rpc("lobby.addAgent", { lobbyId, seatKey, handle, owns });
   }
 
-  /** Signs in through the real CLI device flow, as GitHub user `login` on the fake GitHub. */
+  /** Signs in through the real CLI device flow as a new GitHub user named `login` on the fake GitHub. */
   async login(login: string): Promise<string> {
-    return this.cliWith({ AGENTLOBBIES_GITHUB_CLIENT_ID: `test-${login}` }, this.home, "login", "--no-open");
+    const user = `${login}.${Math.random().toString(36).slice(2, 10)}`;
+    return this.cliWith({ AGENTLOBBIES_GITHUB_CLIENT_ID: `test-${user}` }, this.home, "login", "--no-open");
   }
 
   async agent(client: "claude-code" | "codex", cwd = mkdtempSync(join(tmpdir(), `${client}-`))): Promise<Agent> {

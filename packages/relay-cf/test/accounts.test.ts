@@ -1,6 +1,6 @@
 import { refreshSigningBytes, toB64u, webCrypto } from "@agentlobbies/protocol";
 import { beforeAll, describe, expect, it } from "vitest";
-import { TestSocket, addAgent, createLobby, fakeGitHub, member, postJson, randomIp, signIn } from "./client";
+import { TestSocket, addAgent, addPerson, createLobby, fakeGitHub, member, postJson, randomIp, signIn } from "./client";
 import { newAgent } from "./helpers";
 
 beforeAll(() => fakeGitHub());
@@ -39,7 +39,7 @@ describe("GitHub sign-in", () => {
 
 describe("lobbies need a signed-in owner", () => {
   it("refuses to create a lobby without an account", async () => {
-    const res = await postJson("/v1/lobbies", { host: (await newAgent("host")).profile });
+    const res = await postJson("/v1/lobbies", { name: "nobody's" });
     expect(res.status).toBe(401);
     expect(await res.json()).toMatchObject({ error: { code: "login_required" } });
   });
@@ -55,6 +55,7 @@ describe("lobbies need a signed-in owner", () => {
     const host = await createLobby("alice", alice);
     await addAgent(host.lobbyId, "web-claude", alice);
     const bob = await member(host, "bob");
+    await addPerson(host.lobbyId, "bob", bob);
     await addAgent(host.lobbyId, "api-codex", bob);
     const ws = await TestSocket.open(host);
     const welcome = await ws.hello();

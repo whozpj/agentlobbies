@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { TestSocket, acceptInvite, addAgent, api, createInvite, createLobby, fakeGitHub, member, postJson, randomIp, signIn } from "./client";
+import { TestSocket, acceptInvite, addAgent, addPerson, api, createInvite, createLobby, fakeGitHub, member, postJson, randomIp, signIn } from "./client";
 import { newAgent } from "./helpers";
 
 beforeAll(() => fakeGitHub());
@@ -32,6 +32,7 @@ describe("people and their agents", () => {
   it("lets an invited person join and add their own agents", async () => {
     const lobby = await createLobby();
     const bob = await member(lobby, "bob");
+    await addPerson(lobby.lobbyId, "bob", bob);
     await addAgent(lobby.lobbyId, "api-codex", bob);
     const owners = Object.fromEntries((await roster(lobby)).map((a) => [a.handle, a.owner?.login]));
     expect(owners).toMatchObject({ bob: "bob", "api-codex": "bob" });
@@ -41,16 +42,16 @@ describe("people and their agents", () => {
     const lobby = await createLobby();
     const invite = await createInvite(lobby, { maxUses: 1 });
     expect(invite.url).toMatch(/\/invite\/[A-Za-z0-9_-]{20,}$/);
-    expect((await acceptInvite(invite.token, await signIn("first"), "first")).status).toBe(200);
-    expect((await acceptInvite(invite.token, await signIn("second"), "second")).status).toBe(404);
-    expect((await acceptInvite("not-a-real-invite-token-xx", await signIn("third"), "third")).status).toBe(404);
+    expect((await acceptInvite(invite.token, await signIn("first"))).status).toBe(200);
+    expect((await acceptInvite(invite.token, await signIn("second"))).status).toBe(404);
+    expect((await acceptInvite("not-a-real-invite-token-xx", await signIn("third"))).status).toBe(404);
   });
 
   it("gives view-only invitees no way to add agents", async () => {
     const lobby = await createLobby();
     const { token } = await createInvite(lobby, { role: "viewer" });
     const viewer = await signIn("viewer");
-    expect((await acceptInvite(token, viewer, "viewer")).status).toBe(200);
+    expect((await acceptInvite(token, viewer)).status).toBe(200);
     const res = await postJson(`/v1/lobbies/${lobby.lobbyId}/agents`, { agent: (await newAgent("x")).profile }, randomIp(), viewer.token);
     expect(res.status).toBe(403);
   });

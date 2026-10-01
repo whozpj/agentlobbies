@@ -8,8 +8,8 @@ import { newAgent } from "./helpers";
 
 function envelope(seat: Seat, fields: Record<string, unknown> = {}) {
   return signEnvelope(webCrypto, seat.keys.secretKey, {
-    v: 1, id: ulid(), lobbyId: seat.lobbyId, from: seat.agentId, to: { kind: "broadcast" },
-    type: "update", threadDepth: 0, body: "renamed etaMinutes to estimatedArrival", createdAt: Date.now(), ...fields,
+    v: 2, id: ulid(), lobbyId: seat.lobbyId, from: seat.agentId, to: { kind: "broadcast" },
+    type: "update", threadDepth: 0, sealed: { epoch: 1, iv: "aXZpdml2aXZpdml2", data: "Y2lwaGVydGV4dA" }, createdAt: Date.now(), ...fields,
   });
 }
 
@@ -29,7 +29,7 @@ describe("REST", () => {
   });
 
   it("returns 400 bad_request for an invalid body", async () => {
-    const res = await postJson("/v1/lobbies", { host: { handle: "Not Valid" } }, randomIp(), (await signIn("creator")).token);
+    const res = await postJson("/v1/lobbies", { name: 42 }, randomIp(), (await signIn("creator")).token);
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ error: { code: "bad_request" } });
   });
@@ -38,7 +38,7 @@ describe("REST", () => {
     const ip = randomIp();
     const { token } = await signIn("busy-creator");
     const statuses: number[] = [];
-    for (let i = 0; i < 6; i++) statuses.push((await postJson("/v1/lobbies", { host: (await newAgent("host")).profile }, ip, token)).status);
+    for (let i = 0; i < 6; i++) statuses.push((await postJson("/v1/lobbies", { name: "busy" }, ip, token)).status);
     expect(statuses).toEqual([201, 201, 201, 201, 201, 429]);
   });
 

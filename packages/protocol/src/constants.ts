@@ -3,6 +3,8 @@ export const PROTOCOL_VERSION = 1;
 export const LIMITS = {
   maxAgentsPerLobby: 32,
   maxBodyBytes: 16 * 1024,
+  maxSealedChars: 110 * 1024,
+  maxMachinesPerLobby: 256,
   maxAttachmentBytesTotal: 64 * 1024,
   maxAttachmentsPerEnvelope: 8,
   maxBoardValueBytes: 32 * 1024,

@@ -1,11 +1,12 @@
 import { toB64u, type JoinProfile, type ServerFrame } from "@agentlobbies/protocol";
-import { exports } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
 import { newAgent } from "./helpers";
 
 const BASE = "https://relay.test";
 
+/** Calls the Worker directly. Redirects are returned, not followed, so tests can inspect them. */
 export function api(path: string, init: RequestInit = {}): Promise<Response> {
-  return exports.default.fetch(new Request(BASE + path, init));
+  return exports.default.fetch(new Request(BASE + path, { redirect: "manual", ...init }));
 }
 
 /** A random client IP, so tests don't share the per-IP rate limits. */
@@ -27,10 +28,18 @@ export function postJson(path: string, body: unknown, ip = randomIp(), accountTo
 
 const realFetch = globalThis.fetch;
 
-/** Stands in for api.github.com: a token "gho_fake_<login>" belongs to user <login>. */
+/**
+ * Stands in for GitHub: a token "gho_fake_<login>" belongs to user <login>, and the web sign-in
+ * code "code-<login>" exchanges for that token.
+ */
 export function fakeGitHub(): void {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.hostname === "github.com" && url.pathname === "/login/oauth/access_token") {
+      const { code, client_secret } = JSON.parse(String(init?.body ?? "{}")) as { code: string; client_secret: string };
+      if (!client_secret || !code.startsWith("code-")) return Response.json({ error: "bad_verification_code" });
+      return Response.json({ access_token: `gho_fake_${code.slice("code-".length)}` });
+    }
     if (url.hostname !== "api.github.com") return realFetch(input, init);
     const auth = new Headers(input instanceof Request ? input.headers : init?.headers).get("authorization") ?? "";
     const login = auth.match(/gho_fake_([\w-]+)/)?.[1];
@@ -45,14 +54,40 @@ export interface Account {
   userId: string;
   machineId: string;
   machineKeys: Awaited<ReturnType<typeof newAgent>>["keys"];
+  boxPublicKey: string;
 }
 
+/** Signs in a machine. The relay never opens sealed keys, so any 32 bytes do as its box key. */
 export async function signIn(login: string): Promise<Account> {
   const { keys } = await newAgent("machine");
-  const res = await postJson("/v1/auth/github", { githubToken: `gho_fake_${login}`, machinePublicKey: toB64u(keys.publicKey), machineName: "test-mac" });
+  const boxPublicKey = toB64u(crypto.getRandomValues(new Uint8Array(32)));
+  const res = await postJson("/v1/auth/github", {
+    githubToken: `gho_fake_${login}`, machinePublicKey: toB64u(keys.publicKey), boxPublicKey, machineName: "test-mac",
+  });
   if (res.status !== 200) throw new Error(`sign-in failed: ${res.status} ${await res.text()}`);
   const body = await res.json<{ token: string; user: { userId: string }; machineId: string }>();
-  return { token: body.token, userId: body.user.userId, machineId: body.machineId, machineKeys: keys };
+  return { token: body.token, userId: body.user.userId, machineId: body.machineId, machineKeys: keys, boxPublicKey };
+}
+
+/** The hosted dashboard's origin (PUBLIC_URL). */
+export const ORIGIN = new URL(env.PUBLIC_URL).origin;
+
+/** Signs in through the web flow and returns the session cookie, as a browser would hold it. */
+export async function webSignIn(login: string): Promise<string> {
+  const start = await api("/auth/github/login?return=/lobbies");
+  const stateCookie = start.headers.get("set-cookie")!.split(";")[0]!;
+  const state = new URL(start.headers.get("location")!).searchParams.get("state");
+  const done = await api(`/auth/github/callback?code=code-${login}&state=${state}`, { headers: { cookie: stateCookie } });
+  const session = done.headers.getSetCookie().find((c) => c.startsWith("__Host-session=") && !c.startsWith("__Host-session=;"));
+  if (!session) throw new Error(`web sign-in failed: ${done.status} ${done.headers.get("location")}`);
+  return session.split(";")[0]!;
+}
+
+/** A request from a browser tab on the hosted dashboard. */
+export function web(path: string, cookie: string, init: { method?: string; body?: unknown; origin?: string | null } = {}): Promise<Response> {
+  const headers: Record<string, string> = { cookie, "content-type": "application/json", "cf-connecting-ip": randomIp() };
+  if (init.origin !== null) headers.origin = init.origin ?? ORIGIN;
+  return api(path, { method: init.method ?? "GET", headers, ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }) });
 }
 
 /** A lobby agent as the relay sees it after create or join. */
@@ -68,12 +103,20 @@ export type Lobby = Seat & { account: Account };
 
 /** Creates a lobby as `owner` (a fresh user by default); the returned seat is the owner's person seat. */
 export async function createLobby(handle = "host", owner?: Account): Promise<Lobby> {
-  const a = await newAgent(handle, "cli");
   const account = owner ?? (await signIn(`owner-${handle}`));
-  const res = await postJson("/v1/lobbies", { host: a.profile }, randomIp(), account.token);
+  const res = await postJson("/v1/lobbies", { name: `${handle}-lobby` }, randomIp(), account.token);
   if (res.status !== 201) throw new Error(`create failed: ${res.status} ${await res.text()}`);
+  const { lobbyId } = await res.json<{ lobbyId: string }>();
+  return { ...(await addPerson(lobbyId, handle, account)), account };
+}
+
+/** A member's machine adds their person seat, as a daemon does when it syncs memberships. */
+export async function addPerson(lobbyId: string, handle: string, account: Account): Promise<Seat> {
+  const a = await newAgent(handle, "cli");
+  const res = await postJson(`/v1/lobbies/${lobbyId}/people`, { person: a.profile }, randomIp(), account.token);
+  if (res.status !== 201) throw new Error(`add person failed: ${res.status} ${await res.text()}`);
   const body = await res.json<{ lobbyId: string; agentId: string; token: string }>();
-  return { ...body, keys: a.keys, profile: a.profile, account };
+  return { ...body, keys: a.keys, profile: a.profile };
 }
 
 /** `owner` places one of their agents into the lobby (they must be a member). */
@@ -91,15 +134,15 @@ export async function createInvite(lobby: Lobby, options: Record<string, unknown
   return res.json();
 }
 
-export function acceptInvite(token: string, person: Account, handle: string): Promise<Response> {
-  return newAgent(handle, "cli").then((a) => postJson("/v1/invites/accept", { token, person: a.profile }, randomIp(), person.token));
+export function acceptInvite(token: string, person: Account): Promise<Response> {
+  return postJson("/v1/invites/accept", { token }, randomIp(), person.token);
 }
 
-/** Invites `person` into `lobby` and returns their account, now a member. */
+/** Invites a new user into `lobby` and returns their account, now a member. */
 export async function member(lobby: Lobby, login: string): Promise<Account> {
   const account = await signIn(login);
   const { token } = await createInvite(lobby);
-  const res = await acceptInvite(token, account, login);
+  const res = await acceptInvite(token, account);
   if (res.status !== 200) throw new Error(`accept failed: ${res.status} ${await res.text()}`);
   return account;
 }
@@ -122,9 +165,11 @@ export class TestSocket {
     });
   }
 
-  static async open(seat: Pick<Seat, "lobbyId" | "token">): Promise<TestSocket> {
+  /** With `account`, the socket also proves which machine it's on, so it gets that machine's keys. */
+  static async open(seat: Pick<Seat, "lobbyId" | "token">, account?: Account): Promise<TestSocket> {
+    const protocols = ["agentlobbies.v1", `bearer.${seat.token}`, ...(account ? [`account.${account.token}`] : [])];
     const res = await api(`/v1/lobbies/${seat.lobbyId}/ws`, {
-      headers: { Upgrade: "websocket", "Sec-WebSocket-Protocol": `agentlobbies.v1, bearer.${seat.token}` },
+      headers: { Upgrade: "websocket", "Sec-WebSocket-Protocol": protocols.join(", ") },
     });
     if (!res.webSocket) throw new Error(`upgrade failed: ${res.status}`);
     return new TestSocket(res.webSocket);
@@ -155,7 +200,7 @@ export class TestSocket {
 
   /** Sends hello and waits until replay is finished (the last events page). */
   async hello(afterSeq = 0) {
-    this.send({ t: "hello", v: 1, afterSeq, clientVersion: "0.3.0" });
+    this.send({ t: "hello", v: 1, afterSeq, clientVersion: "0.4.0" });
     await this.next("events", (f) => !f.more);
     return this.frames.find((f) => f.t === "welcome") as Extract<ServerFrame, { t: "welcome" }>;
   }

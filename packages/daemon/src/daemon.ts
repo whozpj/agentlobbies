@@ -1,5 +1,5 @@
 import {
-  refreshSigningBytes, signEnvelope, generateSeatKeys, toB64u, webCrypto,
+  LIMITS, refreshSigningBytes, signEnvelope, generateSeatKeys, toB64u, webCrypto,
   type AgentProfile, type Envelope, type LobbyEvent, type Recipient, type ServerFrame,
 } from "@agentlobbies/protocol";
 import { createHash, randomUUID } from "node:crypto";
@@ -11,9 +11,11 @@ import { ulid } from "ulid";
 import { Connection, type ConnectionState } from "./connection";
 import { startDashboard, type Dashboard } from "./dashboard";
 import { openDb, type Account, type Db, type Seat } from "./db";
+import { decryptContent, encryptContent, generateBoxKeys, newLobbyKey, openLobbyKey, sealLobbyKey, type BoxKeys } from "./encryption";
 import { findSecret } from "./guard";
-import { loadKey, saveKey } from "./keys";
+import { hasKey, loadKey, saveKey } from "./keys";
 import { DaemonError } from "./rpc";
+import { UserLink } from "./user-link";
 
 import { CLIENT_VERSION } from "./version";
 
@@ -27,6 +29,12 @@ interface Session {
 
 type Params = Record<string, unknown>;
 type OkOrErr = Extract<ServerFrame, { t: "ok" | "err" }>;
+type KeysFrame = Extract<ServerFrame, { t: "keys" }>;
+
+const KEY_WAIT_MS = 5_000;
+
+/** Only these may be asked for from the hosted dashboard, through the user object (LLD 15.6). */
+const WEB_METHODS = new Set(["lobby.addAgent"]);
 
 /** A message as handed to an MCP server or the CLI. */
 export interface SurfacedMessage {
@@ -92,9 +100,14 @@ export class Daemon extends EventEmitter {
   private readonly inboxWaiters = new Map<string, (result: { unread: number } | { cancelled: true }) => void>();
 
   private dashboard: Dashboard | undefined;
+  private userLink: UserLink | undefined;
+  private syncing: Promise<void> = Promise.resolve();
 
   constructor(private readonly opts: { home: string; relayUrl: string; dashboardDir?: string }) {
     super();
+    this.on("activity", (activity: { type: string }) => {
+      if (activity.type === "agents") this.userLink?.sendAgents();
+    });
   }
 
   async start(): Promise<void> {
@@ -102,12 +115,14 @@ export class Daemon extends EventEmitter {
     this.db = openDb(join(this.opts.home, "daemon.db"));
     this.running = true;
     for (const seat of this.db.activeSeats()) this.connect(seat);
+    void this.afterSignIn();
   }
 
   async stop(): Promise<void> {
     if (!this.running) return;
     for (const seatId of [...this.pendingAcks.keys()]) this.flushAck(seatId);
     await this.dashboard?.close();
+    this.userLink?.stop();
     this.running = false;
     for (const conn of this.connections.values()) conn.stop();
     this.connections.clear();
@@ -126,11 +141,16 @@ export class Daemon extends EventEmitter {
 
     "account.login": async (p) => {
       const keys = await generateSeatKeys();
+      const box = await generateBoxKeys();
       const res = await this.relay<{ token: string; machineId: string; user: { userId: string; login: string; avatarUrl: string } }>(
-        "/v1/auth/github", { githubToken: String(p.githubToken ?? ""), machinePublicKey: toB64u(keys.publicKey), machineName: hostname() },
+        "/v1/auth/github", {
+          githubToken: String(p.githubToken ?? ""), machinePublicKey: toB64u(keys.publicKey), boxPublicKey: toB64u(box.publicKey), machineName: hostname(),
+        },
       );
       saveKey(this.opts.home, "machine", keys.secretKey);
+      this.saveBoxKeys(box);
       this.db.setAccount({ user_id: res.user.userId, login: res.user.login, avatar_url: res.user.avatarUrl, token: res.token, machine_id: res.machineId });
+      await this.afterSignIn();
       return { login: res.user.login, avatarUrl: res.user.avatarUrl };
     },
 
@@ -142,6 +162,8 @@ export class Daemon extends EventEmitter {
     "account.logout": async () => {
       const account = this.db.account();
       if (account) await this.relay("/v1/auth/logout", {}, account.token).catch(() => {});
+      this.userLink?.stop();
+      this.userLink = undefined;
       this.db.clearAccount();
       return {};
     },
@@ -171,17 +193,13 @@ export class Daemon extends EventEmitter {
       return {};
     },
 
+    // The relay creates the lobby; syncing adds this machine's person seat to it (LLD 15.6).
     "lobby.create": async (p) => {
-      const account = this.requireAccount();
-      const keys = await generateSeatKeys();
-      const name = p.name ? String(p.name) : null;
-      const person = { handle: personHandle(account.login), client: "cli" as const, owns: [], workingOn: "", publicKey: toB64u(keys.publicKey) };
-      const res = await this.relay<{ lobbyId: string; agentId: string; token: string }>(
-        "/v1/lobbies", { host: person, settings: name ? { name } : {} }, await this.accountToken(),
-      );
-      this.addSeat(PERSON, { lobbyId: res.lobbyId, lobbyName: name, agentId: res.agentId, handle: person.handle, role: "host", token: res.token }, keys.secretKey);
-      this.emit("activity", { type: "lobbies" });
-      return { lobbyId: res.lobbyId, name };
+      this.requireAccount();
+      const name = p.name ? String(p.name) : undefined;
+      const res = await this.relay<{ lobbyId: string; name: string | null }>("/v1/lobbies", name ? { name } : {}, await this.accountToken());
+      await this.syncMemberships();
+      return { lobbyId: res.lobbyId, name: res.name };
     },
 
     "invite.create": async (p) => {
@@ -191,29 +209,14 @@ export class Daemon extends EventEmitter {
     },
 
     "invite.accept": async (p) => {
-      const account = this.requireAccount();
+      this.requireAccount();
       const token = String(p.invite ?? "").trim().split("/").pop() ?? "";
-      const keys = await generateSeatKeys();
-      const person = { handle: personHandle(account.login), client: "cli" as const, owns: [], workingOn: "", publicKey: toB64u(keys.publicKey) };
-      const res = await this.relay<{ lobbyId: string; agentId: string; token: string; role: Seat["role"]; handle: string; name: string | null }>(
-        "/v1/invites/accept", { token, person }, await this.accountToken(),
-      );
-      this.addSeat(PERSON, { lobbyId: res.lobbyId, lobbyName: res.name, agentId: res.agentId, handle: res.handle, role: res.role, token: res.token }, keys.secretKey);
-      this.emit("activity", { type: "lobbies" });
-      return { lobbyId: res.lobbyId, name: res.name, role: res.role };
+      const res = await this.relay<{ lobbyId: string; name: string | null; role: string }>("/v1/invites/accept", { token }, await this.accountToken());
+      await this.syncMemberships();
+      return res;
     },
 
-    "agents.list": async () => {
-      const online = new Set([...this.sessions.values()].map((s) => s.seatKey));
-      return this.db.localAgents().map((a) => ({
-        seatKey: a.seat_key,
-        client: a.client,
-        folder: basename(a.cwd),
-        cwd: a.cwd,
-        online: online.has(a.seat_key),
-        lobbies: this.db.seatsFor(a.seat_key).map((s) => ({ lobbyId: s.lobby_id, name: s.lobby_name, handle: s.handle, agentId: s.agent_id })),
-      }));
-    },
+    "agents.list": async () => this.localAgents(),
 
     /** You put one of your own agents into a lobby; the agent is told on its next turn (LLD 14.5). */
     "lobby.addAgent": async (p) => {
@@ -257,11 +260,20 @@ export class Daemon extends EventEmitter {
       return {};
     },
 
+    /** The lobby owner removes a person, or you leave (your own login). Their agents go and the key rotates. */
+    "lobby.removeMember": async (p) => {
+      const lobbyId = String(p.lobbyId ?? "");
+      await this.relay(`/v1/lobbies/${lobbyId}/members/${encodeURIComponent(String(p.login ?? ""))}`, undefined, await this.accountToken(), "DELETE");
+      this.emit("activity", { type: "lobbies" });
+      return {};
+    },
+
     "lobby.status": async (p) => {
       const seat = this.seat(p);
       return {
         lobbyId: seat.lobby_id, lobbyName: seat.lobby_name, handle: seat.handle, role: seat.role,
         connection: this.connections.get(seat.seat_id)?.state ?? "stopped", unread: this.db.unreadCount(seat.seat_id),
+        keyEpoch: this.db.latestLobbyKey(seat.lobby_id)?.epoch ?? 0,
       };
     },
 
@@ -345,18 +357,25 @@ export class Daemon extends EventEmitter {
     const attachments = (p.attachments ?? undefined) as Envelope["attachments"];
     const secret = findSecret([body, ...(attachments ?? []).map((a) => a.content)].join("\n"));
     if (secret && !p.allowSecret) throw new DaemonError("secret_detected", `message contains what looks like a secret (${secret})`);
+    if (Buffer.byteLength(body) > LIMITS.maxBodyBytes) throw new DaemonError("too_large", "message is too long (16 KB at most)");
+    const attachmentBytes = (attachments ?? []).reduce((n, a) => n + Buffer.byteLength(a.content), 0);
+    if (attachmentBytes > LIMITS.maxAttachmentBytesTotal) throw new DaemonError("too_large", "attachments are too large (64 KB at most)");
 
     const inReplyTo = p.inReplyTo ? String(p.inReplyTo) : undefined;
     const parent = inReplyTo ? this.db.findEnvelope(seat.seat_id, inReplyTo) : undefined;
     if (inReplyTo && !parent) throw new DaemonError("bad_reply", `no message with id ${inReplyTo}`);
 
+    const lobbyKey = await this.waitForLobbyKey(seat.lobby_id);
+    const id = ulid();
+    const type = (p.type ?? "update") as Envelope["type"];
+    const sealed = encryptContent(lobbyKey.key, { lobbyId: seat.lobby_id, id, from: seat.agent_id, type, epoch: lobbyKey.epoch },
+      attachments ? { body, attachments } : { body });
     const envelope = await signEnvelope(webCrypto, loadKey(this.opts.home, seat.seat_id), {
-      v: 1, id: ulid(), lobbyId: seat.lobby_id, from: seat.agent_id,
+      v: 2, id, lobbyId: seat.lobby_id, from: seat.agent_id,
       to: p.to === undefined && parent ? { kind: "direct", agentId: parent.from } : this.resolveTo(seat, String(p.to ?? "all")),
-      type: (p.type ?? "update") as Envelope["type"], threadDepth: parent ? parent.threadDepth + 1 : 0,
-      body, createdAt: Date.now(),
+      type, threadDepth: parent ? parent.threadDepth + 1 : 0,
+      sealed, createdAt: Date.now(),
       ...(inReplyTo ? { inReplyTo } : {}),
-      ...(attachments ? { attachments } : {}),
     });
 
     // The outbox keeps the signed frame, so retries after a reconnect reuse the same envelope id (I5).
@@ -409,10 +428,11 @@ export class Daemon extends EventEmitter {
     const conn: Connection = new Connection({
       url: `${seat.relay_url.replace(/^http/, "ws")}/v1/lobbies/${seat.lobby_id}/ws`,
       token: () => this.tokenFor(seat.seat_id),
+      accountToken: () => (this.db.account() ? this.accountToken() : Promise.resolve(undefined)),
       onRejected: () => this.rejectedTokens.add(seat.seat_id),
       clientVersion: CLIENT_VERSION,
       cursor: () => this.db.cursor(seat.seat_id),
-      onFrame: (frame): void => this.onFrame(seat, conn, frame),
+      onFrame: (frame) => this.onFrame(seat, conn, frame),
       onState: (state): void => this.onState(seat, conn, state),
     });
     this.connections.set(seat.seat_id, conn);
@@ -465,9 +485,11 @@ export class Daemon extends EventEmitter {
     this.emit("activity", { type: "connection", lobbyId: seat.lobby_id, state });
   }
 
-  private onFrame(seat: Seat, conn: Connection, frame: ServerFrame): void {
+  private async onFrame(seat: Seat, conn: Connection, frame: ServerFrame): Promise<void> {
     if (!this.running) return;
     switch (frame.t) {
+      case "keys":
+        return this.onKeys(seat, conn, frame);
       case "welcome":
         this.db.replaceRoster(seat.seat_id, frame.roster);
         this.emit("activity", { type: "roster", lobbyId: seat.lobby_id });
@@ -493,9 +515,20 @@ export class Daemon extends EventEmitter {
   }
 
   /** Stores events and moves the cursor. Callers ack only after this, so a crash can only cause a harmless redelivery (I13). */
-  private store(seat: Seat, events: LobbyEvent[]): void {
-    if (events.length === 0) return;
-    this.db.ingest(seat.seat_id, events);
+  private store(seat: Seat, received: LobbyEvent[]): void {
+    if (received.length === 0) return;
+    const locked = new Set<string>();
+    const broken: string[] = [];
+    const events = received.map((e) => {
+      if (e.kind !== "message") return e;
+      const opened = this.openEnvelope(seat.lobby_id, e.envelope);
+      if (opened === "locked") locked.add(e.envelope.id);
+      if (opened === "broken") broken.push(e.envelope.id);
+      return typeof opened === "string" ? e : { ...e, envelope: opened };
+    });
+    this.db.ingest(seat.seat_id, events, locked);
+    // A message that fails authentication was changed or forged; it is never shown.
+    for (const id of broken) this.db.markSurfaced(seat.seat_id, id);
     for (const e of events) {
       if (e.kind === "system" && e.system.type === "joined") this.db.addToRoster(seat.seat_id, e.system.agent);
       if (e.kind === "system" && e.system.type === "left") this.db.removeFromRoster(seat.seat_id, e.system.agentId);
@@ -534,7 +567,9 @@ export class Daemon extends EventEmitter {
     if (frame.t === "ok" && frame.seq) {
       const sent = this.db.outboxFrame(reqId) as { envelope: Envelope } | undefined;
       if (sent) {
-        const own: LobbyEvent = { kind: "message", seq: frame.seq, committedAt: Date.now(), envelope: sent.envelope };
+        const opened = this.openEnvelope(seat.lobby_id, sent.envelope);
+        const envelope = typeof opened === "string" ? sent.envelope : opened;
+        const own: LobbyEvent = { kind: "message", seq: frame.seq, committedAt: Date.now(), envelope };
         this.db.recordOwn(seat.seat_id, own);
         this.emitMessage(seat, own);
       }
@@ -555,7 +590,7 @@ export class Daemon extends EventEmitter {
     const handleOf = (agentId: string) => this.db.roster(view.seat_id).find((a) => a.agentId === agentId)?.handle ?? agentId;
     const to = env.to.kind === "broadcast" ? "all" : env.to.kind === "topic" ? `#${env.to.topic}` : handleOf(env.to.agentId);
     return {
-      id: env.id, seq: e.seq, from: handleOf(env.from), to, type: env.type, body: env.body,
+      id: env.id, seq: e.seq, from: handleOf(env.from), to, type: env.type, body: env.body ?? null,
       inReplyTo: env.inReplyTo ?? null, committedAt: e.committedAt,
     };
   }
@@ -570,7 +605,7 @@ export class Daemon extends EventEmitter {
     const env = e.envelope;
     const sender = this.db.roster(seat.seat_id).find((a) => a.agentId === env.from);
     return {
-      id: env.id, seq: e.seq, from: sender?.handle ?? env.from, fromAgentId: env.from, type: env.type, to: env.to, body: env.body,
+      id: env.id, seq: e.seq, from: sender?.handle ?? env.from, fromAgentId: env.from, type: env.type, to: env.to, body: env.body ?? "",
       ...(sender ? { fromClient: sender.client } : {}),
       ...(sender?.model ? { fromModel: sender.model } : {}),
       ...(sender?.owner ? { fromOwner: sender.owner.login } : {}),
@@ -589,6 +624,187 @@ export class Daemon extends EventEmitter {
     const seat = this.db.activeSeatIn(seatKey, s.lobbyId)!;
     this.connect(seat);
     return seat;
+  }
+
+  /** Signed in: make sure this machine can receive lobby keys, connect to the user object, and sync lobbies. */
+  private async afterSignIn(): Promise<void> {
+    if (!this.db.account()) return;
+    try {
+      await this.ensureBoxKeys();
+    } catch {
+      // Retried on the next start; until then this machine just doesn't receive keys.
+    }
+    this.userLink?.stop();
+    this.userLink = new UserLink({
+      url: `${this.opts.relayUrl.replace(/^http/, "ws")}/v1/me/ws`,
+      token: () => this.accountToken(),
+      agents: () => this.localAgents(),
+      onCall: (method, params) => {
+        if (!WEB_METHODS.has(method)) throw new DaemonError("forbidden", `${method} can't be called from the web`);
+        return this.call(method, params);
+      },
+      onLobbiesChanged: () => void this.syncMemberships().catch(() => {}),
+    });
+    void this.userLink.start();
+    await this.syncMemberships().catch(() => {});
+  }
+
+  /** Machines that signed in before v0.4 make their encryption key now (LLD 15.2). */
+  private async ensureBoxKeys(): Promise<void> {
+    if (this.boxKeys()) return;
+    const box = await generateBoxKeys();
+    await this.relay("/v1/auth/box-key", { boxPublicKey: toB64u(box.publicKey) }, await this.accountToken());
+    this.saveBoxKeys(box);
+  }
+
+  private boxKeys(): BoxKeys | undefined {
+    if (!hasKey(this.opts.home, "machine-box") || !hasKey(this.opts.home, "machine-box-public")) return undefined;
+    return { privateKey: loadKey(this.opts.home, "machine-box"), publicKey: loadKey(this.opts.home, "machine-box-public") };
+  }
+
+  private saveBoxKeys(box: BoxKeys): void {
+    saveKey(this.opts.home, "machine-box", box.privateKey);
+    saveKey(this.opts.home, "machine-box-public", box.publicKey);
+  }
+
+  /**
+   * Gives this machine a person seat in every lobby its user belongs to (LLD 15.6). Runs one at a
+   * time, so two syncs never add two seats for the same lobby.
+   */
+  private syncMemberships(): Promise<void> {
+    this.syncing = this.syncing.catch(() => {}).then(() => this.addMissingPersonSeats());
+    return this.syncing;
+  }
+
+  private async addMissingPersonSeats(): Promise<void> {
+    const account = this.db.account();
+    if (!account) return;
+    const lobbies = await this.relay<{ lobbyId: string; name: string | null }[]>("/v1/lobbies", undefined, await this.accountToken(), "GET");
+    let added = false;
+    for (const lobby of lobbies) {
+      if (this.db.activeSeatIn(PERSON, lobby.lobbyId)) continue;
+      const keys = await generateSeatKeys();
+      const person = { handle: personHandle(account.login), client: "cli" as const, owns: [], workingOn: "", publicKey: toB64u(keys.publicKey) };
+      const res = await this.relay<{ agentId: string; token: string; handle: string; role: Seat["role"] }>(
+        `/v1/lobbies/${lobby.lobbyId}/people`, { person }, await this.accountToken(),
+      );
+      this.addSeat(PERSON, { lobbyId: lobby.lobbyId, lobbyName: lobby.name, agentId: res.agentId, handle: res.handle, role: res.role, token: res.token }, keys.secretKey);
+      added = true;
+    }
+    if (added) this.emit("activity", { type: "lobbies" });
+  }
+
+  /**
+   * Opens the lobby keys sealed to this machine, then does whatever the lobby needs from an online
+   * member: make the first key, rotate it, or seal it for machines that lack it (LLD 15.4).
+   */
+  private async onKeys(seat: Seat, conn: Connection, frame: KeysFrame): Promise<void> {
+    const box = this.boxKeys();
+    const account = this.db.account();
+    if (!box || !account) return;
+    const lobbyId = seat.lobby_id;
+
+    for (const { epoch, sealed } of frame.mine) {
+      if (this.db.lobbyKey(lobbyId, epoch)) continue;
+      try {
+        this.db.saveLobbyKey(lobbyId, epoch, await openLobbyKey(box.privateKey, lobbyId, epoch, sealed));
+      } catch {
+        // Sealed to a box key this machine no longer has; another member will seal it again.
+      }
+    }
+    this.unlockMessages(lobbyId);
+
+    // Every seat in the lobby gets this frame; one of them does the work for this machine.
+    const seatsHere = this.db.activeSeats().filter((s) => s.lobby_id === lobbyId);
+    if (this.viewSeat(seatsHere).seat_id !== seat.seat_id) return;
+    if (!frame.machines.some((m) => m.machineId === account.machine_id)) return;
+
+    if (frame.current === 0 || frame.rotate) {
+      const epoch = frame.current + 1;
+      const key = newLobbyKey();
+      const sealed = [];
+      for (const machine of frame.machines) {
+        sealed.push({ machineId: machine.machineId, sealed: await sealLobbyKey(machine.boxPublicKey, lobbyId, epoch, key) });
+      }
+      conn.send({ t: "keys.put", reqId: ulid(), epoch, create: true, sealed });
+      return;
+    }
+
+    const byEpoch = new Map<number, { machineId: string; sealed: string }[]>();
+    for (const { machineId, epochs } of frame.missing) {
+      const machine = frame.machines.find((m) => m.machineId === machineId);
+      if (!machine) continue;
+      for (const epoch of epochs) {
+        const key = this.db.lobbyKey(lobbyId, epoch);
+        if (!key) continue;
+        const list = byEpoch.get(epoch) ?? [];
+        list.push({ machineId, sealed: await sealLobbyKey(machine.boxPublicKey, lobbyId, epoch, key) });
+        byEpoch.set(epoch, list);
+      }
+    }
+    for (const [epoch, sealed] of byEpoch) conn.send({ t: "keys.put", reqId: ulid(), epoch, create: false, sealed });
+  }
+
+  /** Decrypts an envelope with this machine's key for its epoch: "locked" if the key hasn't arrived, "broken" if it fails. */
+  private openEnvelope(lobbyId: string, envelope: Envelope): Envelope | "locked" | "broken" {
+    if (!envelope.sealed || envelope.body !== undefined) return envelope;
+    const key = this.db.lobbyKey(lobbyId, envelope.sealed.epoch);
+    if (!key) return "locked";
+    try {
+      const binding = { lobbyId, id: envelope.id, from: envelope.from, type: envelope.type, epoch: envelope.sealed.epoch };
+      return { ...envelope, ...decryptContent(key, binding, envelope.sealed) };
+    } catch {
+      return "broken";
+    }
+  }
+
+  /** Messages that arrived before their key: decrypt them now and let waiting agents know. */
+  private unlockMessages(lobbyId: string): void {
+    const seatsWithNew = new Set<string>();
+    for (const row of this.db.lockedMessages(lobbyId)) {
+      const event = JSON.parse(row.event_json) as Extract<LobbyEvent, { kind: "message" }>;
+      const opened = this.openEnvelope(lobbyId, event.envelope);
+      if (opened === "locked") continue;
+      if (opened === "broken") {
+        this.db.unlock(row.seat_id, row.seq, row.event_json);
+        this.db.markSurfaced(row.seat_id, event.envelope.id);
+        continue;
+      }
+      this.db.unlock(row.seat_id, row.seq, JSON.stringify({ ...event, envelope: opened }));
+      seatsWithNew.add(row.seat_id);
+    }
+    for (const seatId of seatsWithNew) {
+      const unread = this.db.unreadCount(seatId);
+      this.inboxWaiters.get(seatId)?.({ unread });
+      this.emit("notify", { method: "inbox.new", params: { seatId, unread } });
+    }
+    if (seatsWithNew.size > 0) this.emit("activity", { type: "roster", lobbyId });
+  }
+
+  /** The newest lobby key, waiting briefly for one in a lobby that was just created or joined. */
+  private async waitForLobbyKey(lobbyId: string): Promise<{ epoch: number; key: Uint8Array }> {
+    const deadline = Date.now() + KEY_WAIT_MS;
+    for (;;) {
+      const key = this.db.latestLobbyKey(lobbyId);
+      if (key) return key;
+      if (Date.now() > deadline) {
+        throw new DaemonError("waiting_for_key",
+          "This lobby's encryption key hasn't reached this machine yet. It arrives as soon as another member's machine is online.");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
+  private localAgents() {
+    const online = new Set([...this.sessions.values()].map((s) => s.seatKey));
+    return this.db.localAgents().map((a) => ({
+      seatKey: a.seat_key,
+      client: a.client,
+      folder: basename(a.cwd),
+      cwd: a.cwd,
+      online: online.has(a.seat_key),
+      lobbies: this.db.seatsFor(a.seat_key).map((s) => ({ lobbyId: s.lobby_id, name: s.lobby_name, handle: s.handle, agentId: s.agent_id })),
+    }));
   }
 
   private requireAccount(): Account {

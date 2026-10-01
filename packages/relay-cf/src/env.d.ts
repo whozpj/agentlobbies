@@ -3,4 +3,5 @@ interface Env {
   JWT_PRIVATE_KEY: string;
   JWT_PUBLIC_KEYS: string;
   IP_HASH_SALT: string;
+  GITHUB_CLIENT_SECRET: string;
 }

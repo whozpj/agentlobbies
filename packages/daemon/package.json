@@ -27,6 +27,7 @@
   },
   "dependencies": {
     "@agentlobbies/protocol": "workspace:*",
+    "@hpke/core": "^1.9.0",
     "ulid": "^3.0.0"
   },
   "devDependencies": {

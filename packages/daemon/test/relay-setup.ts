@@ -33,6 +33,8 @@ export default async function setup(project: TestProject) {
       JWT_PUBLIC_KEYS: JSON.stringify({ k1: publicKey.export({ format: "pem", type: "spki" }).toString() }),
       IP_HASH_SALT: randomBytes(32).toString("hex"),
       GITHUB_API_URL: github.url,
+      GITHUB_URL: github.url,
+      GITHUB_CLIENT_SECRET: "test-secret",
     },
     experimental: { disableExperimentalWarning: true },
   });

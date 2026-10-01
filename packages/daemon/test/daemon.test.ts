@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, inject, it, vi } from "vitest";
 import { Connection } from "../src/connection";
 import { Daemon } from "../src/daemon";
-import { add, agentSession, eventually } from "./lobby-helpers";
+import { add, agentSession, eventually, freshUser } from "./lobby-helpers";
 
 const relayUrl = inject("relayUrl");
 const running: Daemon[] = [];
@@ -15,7 +15,7 @@ async function startDaemon(home = mkdtempSync(join(tmpdir(), "al-home-")), login
   const daemon = new Daemon({ home, relayUrl });
   await daemon.start();
   running.push(daemon);
-  await daemon.call("account.login", { githubToken: `gho_fake_${login}` });
+  await daemon.call("account.login", { githubToken: freshUser(login) });
   return daemon;
 }
 

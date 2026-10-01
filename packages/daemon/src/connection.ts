@@ -10,6 +10,8 @@ const TERMINAL: Record<number, ConnectionState> = { 4003: "kicked", 4009: "repla
 export interface ConnectionOptions {
   url: string;
   token: () => Promise<string>;
+  /** The signed-in machine's account token, sent alongside so the relay knows which machine's keys to give (LLD 15.3). */
+  accountToken?: () => Promise<string | undefined>;
   /** Called when the relay refuses the socket before it opens, usually a bad token. */
   onRejected: () => void;
   clientVersion: string;
@@ -44,8 +46,11 @@ export class Connection {
     } catch {
       return this.retryLater();
     }
+    const accountToken = await this.opts.accountToken?.().catch(() => undefined);
     if (this.state === "stopped") return;
-    const ws = new WebSocket(this.opts.url, ["agentlobbies.v1", `bearer.${token}`]);
+    const protocols = ["agentlobbies.v1", `bearer.${token}`];
+    if (accountToken) protocols.push(`account.${accountToken}`);
+    const ws = new WebSocket(this.opts.url, protocols);
     this.ws = ws;
     let opened = false;
 

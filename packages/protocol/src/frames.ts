@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { LIMITS } from "./constants.js";
-import { AgentProfile, B64u, BoardEntry, BoardKey, Envelope, LobbyEvent, LobbySettings, Ms, PresenceStatus, Role, Seq, Topic, Ulid } from "./schemas.js";
+import { AgentProfile, B64u, BoardEntry, BoardKey, Envelope, LobbyEvent, LobbySettings, MessageMeta, Ms, PresenceStatus, Role, Seq, Topic, Ulid } from "./schemas.js";
 
 const Cursor = z.number().int().min(0);
 
@@ -14,6 +14,11 @@ export const ClientFrame = z.discriminatedUnion("t", [
   z.object({ t: z.literal("board.put"), reqId: Ulid, key: BoardKey, value: z.string(), expectedVersion: Cursor, sig: B64u }),
   z.object({ t: z.literal("board.delete"), reqId: Ulid, key: BoardKey, expectedVersion: z.number().int().positive(), sig: B64u }),
   z.object({ t: z.literal("replay.more"), afterSeq: Cursor }),
+  z.object({
+    // create: start epoch `current + 1`; otherwise fill in copies of an existing epoch.
+    t: z.literal("keys.put"), reqId: Ulid, epoch: z.number().int().positive(), create: z.boolean(),
+    sealed: z.array(z.object({ machineId: Ulid, sealed: B64u })).min(1).max(LIMITS.maxMachinesPerLobby),
+  }),
 ]);
 
 export const ServerFrame = z.discriminatedUnion("t", [
@@ -35,6 +40,15 @@ export const ServerFrame = z.discriminatedUnion("t", [
     latest: z.object({ envelopeId: Ulid, from: Ulid, preview: z.string().max(200) }).optional(),
   }),
   z.object({ t: z.literal("notice"), kind: z.literal("rate_limited"), agentId: Ulid }),
+  // Lobby keys, sealed to machines (LLD 15.4).
+  z.object({
+    t: z.literal("keys"), current: Cursor, rotate: z.boolean(),
+    mine: z.array(z.object({ epoch: z.number().int().positive(), sealed: B64u })),
+    machines: z.array(z.object({ machineId: Ulid, boxPublicKey: B64u })),
+    missing: z.array(z.object({ machineId: Ulid, epochs: z.array(z.number().int().positive()) })),
+  }),
+  // To dashboard watchers only: a message without its content (LLD 15.6).
+  z.object({ t: z.literal("meta"), message: MessageMeta }),
 ]);
 
 export type ClientFrame = z.infer<typeof ClientFrame>;

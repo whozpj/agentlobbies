@@ -19,9 +19,10 @@ export async function newAgent(handle: string, client: JoinProfile["client"] = "
 
 export type TestAgent = Awaited<ReturnType<typeof newAgent>>;
 
+/** A signed v2 envelope. The relay never decrypts, so the sealed content here is just opaque bytes. */
 export function envelope(from: TestAgent, fields: Partial<Omit<Envelope, "sig">> = {}): Promise<Envelope> {
   return signEnvelope(webCrypto, from.keys.secretKey, {
-    v: 1, id: ulid(), lobbyId: LOBBY_ID, from: from.agentId, to: { kind: "broadcast" },
-    type: "update", threadDepth: 0, body: "hello", createdAt: Date.now(), ...fields,
+    v: 2, id: ulid(), lobbyId: LOBBY_ID, from: from.agentId, to: { kind: "broadcast" },
+    type: "update", threadDepth: 0, sealed: { epoch: 1, iv: "aXZpdml2aXZpdml2", data: "Y2lwaGVydGV4dA" }, createdAt: Date.now(), ...fields,
   });
 }

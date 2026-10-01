@@ -14,6 +14,8 @@ declare module "vitest" {
 }
 
 const CLI = join(import.meta.dirname, "../dist/cli.js");
+// The fake GitHub treats "<login>.<tag>" as its own user with that login, so other test files never share ours.
+const TAG = Math.random().toString(36).slice(2, 10);
 const home = mkdtempSync(join("/tmp", "al-cli-"));
 const folder = (name: string) => mkdtempSync(join(tmpdir(), `${name}-`));
 
@@ -30,7 +32,8 @@ async function cli(cwd: string, ...args: string[]): Promise<{ out: string; code:
 }
 
 async function cliWith(extraEnv: Record<string, string>, cwd: string, ...args: string[]): Promise<{ out: string; code: number }> {
-  const env = { ...process.env, AGENTLOBBIES_HOME: home, AGENTLOBBIES_RELAY_URL: inject("relayUrl"), AGENTLOBBIES_GITHUB_URL: inject("githubUrl"), NO_COLOR: "1", ...extraEnv };
+  const env = { ...process.env, AGENTLOBBIES_HOME: home, AGENTLOBBIES_RELAY_URL: inject("relayUrl"), AGENTLOBBIES_GITHUB_URL: inject("githubUrl"),
+    AGENTLOBBIES_GITHUB_CLIENT_ID: `test-tester.${TAG}`, NO_COLOR: "1", ...extraEnv };
   try {
     const { stdout } = await promisify(execFile)(process.execPath, [CLI, ...args], { cwd, env });
     return { out: stdout, code: 0 };
@@ -55,7 +58,7 @@ async function asPerson(login: string, ...args: string[]) {
   if (!personHome) {
     personHome = mkdtempSync(join("/tmp", `al-${login}-`));
     people.set(login, personHome);
-    await cliWith({ AGENTLOBBIES_HOME: personHome, AGENTLOBBIES_GITHUB_CLIENT_ID: `test-${login}` }, folder(login), "login", "--no-open");
+    await cliWith({ AGENTLOBBIES_HOME: personHome, AGENTLOBBIES_GITHUB_CLIENT_ID: `test-${login}.${TAG}` }, folder(login), "login", "--no-open");
   }
   return cliWith({ AGENTLOBBIES_HOME: personHome }, folder(login), ...args);
 }

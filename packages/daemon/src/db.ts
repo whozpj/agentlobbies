@@ -63,6 +63,13 @@ const SCHEMA = `
     surfaced_at INTEGER
   );
 
+  CREATE TABLE IF NOT EXISTS lobby_keys (
+    lobby_id TEXT NOT NULL,
+    epoch    INTEGER NOT NULL,
+    key      TEXT NOT NULL,                  -- opened lobby key, base64url (LLD 15.2)
+    PRIMARY KEY (lobby_id, epoch)
+  );
+
   CREATE TABLE IF NOT EXISTS roster (
     seat_id      TEXT NOT NULL,
     agent_id     TEXT NOT NULL,
@@ -116,6 +123,9 @@ export class Db {
   constructor(private readonly db: DatabaseSync) {
     db.exec("PRAGMA journal_mode = WAL");
     db.exec(SCHEMA);
+    // Added in v0.4: a message this machine can't decrypt yet waits, unseen, until the key arrives.
+    const inboxColumns = db.prepare("PRAGMA table_info(inbox)").all() as { name: string }[];
+    if (!inboxColumns.some((c) => c.name === "locked")) db.exec("ALTER TABLE inbox ADD COLUMN locked INTEGER NOT NULL DEFAULT 0");
   }
 
   close(): void {
@@ -167,10 +177,38 @@ export class Db {
   }
 
 
-  /** Stores events, ignoring any already stored (replays are safe to repeat). */
-  ingest(seatId: string, events: LobbyEvent[]): void {
-    const insert = this.db.prepare("INSERT OR IGNORE INTO inbox (seat_id, seq, event_id, kind, event_json) VALUES (?, ?, ?, ?, ?)");
-    for (const e of events) insert.run(seatId, e.seq, eventId(e), e.kind, JSON.stringify(e));
+  /** Stores events, ignoring any already stored (replays are safe to repeat). `locked` ids wait for their key. */
+  ingest(seatId: string, events: LobbyEvent[], locked: Set<string> = new Set()): void {
+    const insert = this.db.prepare("INSERT OR IGNORE INTO inbox (seat_id, seq, event_id, kind, event_json, locked) VALUES (?, ?, ?, ?, ?, ?)");
+    for (const e of events) insert.run(seatId, e.seq, eventId(e), e.kind, JSON.stringify(e), locked.has(eventId(e)) ? 1 : 0);
+  }
+
+  /** Messages in a lobby still waiting for their key, across this machine's seats. */
+  lockedMessages(lobbyId: string): { seat_id: string; seq: number; event_json: string }[] {
+    return this.db.prepare(
+      `SELECT i.seat_id, i.seq, i.event_json FROM inbox i JOIN seats s ON s.seat_id = i.seat_id
+       WHERE s.lobby_id = ? AND i.locked = 1 ORDER BY i.seq`,
+    ).all(lobbyId) as { seat_id: string; seq: number; event_json: string }[];
+  }
+
+  unlock(seatId: string, seq: number, eventJson: string): void {
+    this.db.prepare("UPDATE inbox SET event_json = ?, locked = 0 WHERE seat_id = ? AND seq = ?").run(eventJson, seatId, seq);
+  }
+
+  saveLobbyKey(lobbyId: string, epoch: number, key: Uint8Array): void {
+    this.db.prepare("INSERT OR IGNORE INTO lobby_keys (lobby_id, epoch, key) VALUES (?, ?, ?)").run(lobbyId, epoch, Buffer.from(key).toString("base64url"));
+  }
+
+  lobbyKey(lobbyId: string, epoch: number): Uint8Array | undefined {
+    const row = this.db.prepare("SELECT key FROM lobby_keys WHERE lobby_id = ? AND epoch = ?").get(lobbyId, epoch) as { key: string } | undefined;
+    return row ? new Uint8Array(Buffer.from(row.key, "base64url")) : undefined;
+  }
+
+  /** The newest key this machine holds for a lobby: the one new messages use. */
+  latestLobbyKey(lobbyId: string): { epoch: number; key: Uint8Array } | undefined {
+    const row = this.db.prepare("SELECT epoch, key FROM lobby_keys WHERE lobby_id = ? ORDER BY epoch DESC LIMIT 1").get(lobbyId) as
+      { epoch: number; key: string } | undefined;
+    return row ? { epoch: row.epoch, key: new Uint8Array(Buffer.from(row.key, "base64url")) } : undefined;
   }
 
   /** Records a message this seat sent, so replies can find their parent (G8). */
@@ -180,7 +218,7 @@ export class Db {
   }
 
   unreadCount(seatId: string): number {
-    const messages = (this.db.prepare("SELECT COUNT(*) AS n FROM inbox WHERE seat_id = ? AND kind = 'message' AND own = 0 AND surfaced_at IS NULL")
+    const messages = (this.db.prepare("SELECT COUNT(*) AS n FROM inbox WHERE seat_id = ? AND kind = 'message' AND own = 0 AND locked = 0 AND surfaced_at IS NULL")
       .get(seatId) as { n: number }).n;
     const notices = (this.db.prepare("SELECT COUNT(*) AS n FROM notices WHERE seat_id = ? AND surfaced_at IS NULL").get(seatId) as { n: number }).n;
     return messages + notices;
@@ -189,7 +227,7 @@ export class Db {
   /** Oldest unread messages first; marks exactly those as read. */
   takeUnread(seatId: string, limit: number): LobbyEvent[] {
     const rows = this.db.prepare(
-      "SELECT seq, event_json FROM inbox WHERE seat_id = ? AND kind = 'message' AND own = 0 AND surfaced_at IS NULL ORDER BY seq LIMIT ?",
+      "SELECT seq, event_json FROM inbox WHERE seat_id = ? AND kind = 'message' AND own = 0 AND locked = 0 AND surfaced_at IS NULL ORDER BY seq LIMIT ?",
     ).all(seatId, limit) as { seq: number; event_json: string }[];
     const mark = this.db.prepare("UPDATE inbox SET surfaced_at = ? WHERE seat_id = ? AND seq = ?");
     for (const r of rows) mark.run(Date.now(), seatId, r.seq);
