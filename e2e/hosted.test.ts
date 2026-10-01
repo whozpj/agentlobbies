@@ -119,3 +119,124 @@ describe("the hosted dashboard", () => {
     await page.close();
   });
 });
+
+/** A browser signed in to the hosted dashboard as the same GitHub user as `machine`. */
+async function signedIn(machine: Machine, viewport = { width: 1440, height: 900 }): Promise<Page> {
+  const context = await browser.newContext({ viewport });
+  const page = await context.newPage();
+  await page.goto(publicUrl);
+  await signIn(page, machine.githubUser);
+  await pwExpect(page.getByRole("heading", { name: "Lobbies" })).toBeVisible();
+  return page;
+}
+
+async function keyEpoch(machine: Machine, name: string): Promise<number> {
+  const lobbies = await machine.rpc<{ name: string; keyEpoch: number }[]>("dashboard.lobbies");
+  return lobbies.find((l) => l.name === name)?.keyEpoch ?? 0;
+}
+
+async function until(check: () => Promise<boolean>, what: string): Promise<void> {
+  for (let i = 0; i < 100; i++) {
+    if (await check()) return;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
+
+describe("people, from the browser", () => {
+  it("joins with a pasted link, then the owner removes the member and the key changes", async () => {
+    const owner = new Machine();
+    await owner.login("boss");
+    await owner.createLobby("team");
+    await until(async () => (await keyEpoch(owner, "team")) === 1, "the first key");
+    const link = (await owner.cli(owner.home, "invite")).match(/https?:\/\/\S+\/invite\/[\w-]+/)![0];
+
+    const helper = new Machine();
+    await helper.login("helper");
+    const helperPage = await signedIn(helper);
+    await helperPage.getByRole("button", { name: "Join with invite" }).click();
+    await helperPage.getByPlaceholder("https://…/invite/…").fill(link);
+    await helperPage.getByRole("dialog").getByRole("button", { name: "Join" }).click();
+    await pwExpect(helperPage.getByRole("heading", { name: "team" })).toBeVisible();
+    await until(async () => (await keyEpoch(helper, "team")) === 1, "the helper's machine to get the key");
+
+    const ownerPage = await signedIn(owner);
+    await ownerPage.getByRole("link", { name: "team" }).click();
+    await ownerPage.getByRole("button", { name: /People/ }).click();
+    const helperRow = ownerPage.getByRole("dialog").getByRole("listitem").filter({ hasText: "@helper" });
+    await pwExpect(helperRow).toBeVisible();
+    await helperRow.getByRole("button", { name: "Remove" }).click();
+
+    await until(async () => (await keyEpoch(owner, "team")) === 2, "a new key after the removal");
+    await until(async () => (await helper.rpc<unknown[]>("dashboard.lobbies")).length === 0, "the helper's machine to leave");
+    await helperPage.reload();
+    await pwExpect(helperPage.getByText("No lobbies yet")).toBeVisible();
+  });
+
+  it("lets a member leave from the browser", async () => {
+    const owner = new Machine();
+    await owner.login("host2");
+    await owner.createLobby("leavable");
+    const link = (await owner.cli(owner.home, "invite")).match(/https?:\/\/\S+\/invite\/[\w-]+/)![0];
+    const member = new Machine();
+    await member.login("leaver");
+    await member.cli(member.home, "accept", link);
+
+    const page = await signedIn(member);
+    await page.getByRole("link", { name: "leavable" }).click();
+    await page.getByRole("button", { name: /People/ }).click();
+    await page.getByRole("button", { name: "Leave lobby" }).click();
+    await pwExpect(page.getByText("No lobbies yet")).toBeVisible();
+  });
+
+  it("shows a view-only member no way to add agents or invite", async () => {
+    const owner = new Machine();
+    await owner.login("host3");
+    await owner.createLobby("view-only");
+    const link = (await owner.cli(owner.home, "invite", "--viewer")).match(/https?:\/\/\S+\/invite\/[\w-]+/)![0];
+    const viewer = new Machine();
+    await viewer.login("watcher");
+
+    const page = await signedIn(viewer);
+    await page.goto(link);
+    await pwExpect(page.getByText("You'll join as a viewer.")).toBeVisible();
+    await page.getByRole("button", { name: /Join as @watcher/ }).click();
+    await pwExpect(page.getByRole("heading", { name: "view-only" })).toBeVisible();
+    await pwExpect(page.getByRole("button", { name: "Add agent" })).toHaveCount(0);
+    await pwExpect(page.getByRole("button", { name: "Invite people" })).toHaveCount(0);
+  });
+
+  it("signs out", async () => {
+    const someone = new Machine();
+    await someone.login("signer");
+    const page = await signedIn(someone);
+    await page.getByRole("button", { name: "Sign out" }).click();
+    await pwExpect(page.getByRole("link", { name: "Sign in with GitHub" })).toBeVisible();
+    await page.reload();
+    await pwExpect(page.getByRole("link", { name: "Sign in with GitHub" })).toBeVisible();
+  });
+});
+
+describe("layout", () => {
+  it("fits a phone screen without sideways scrolling, in both themes", async () => {
+    const someone = new Machine();
+    await someone.login("phone");
+    await someone.createLobby("pocket");
+    const page = await signedIn(someone, { width: 390, height: 844 });
+    await page.getByRole("link", { name: "pocket" }).click();
+    await pwExpect(page.getByRole("heading", { name: "pocket" })).toBeVisible();
+
+    const overflow = () => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    expect(await overflow()).toBeLessThanOrEqual(0);
+    if (SCREENSHOTS) await page.screenshot({ path: `${SCREENSHOTS}/hosted-phone-dark.png`, fullPage: true });
+
+    await page.getByRole("button", { name: "Light mode" }).click();
+    expect(await page.evaluate(() => document.documentElement.dataset.theme)).toBe("light");
+    expect(await overflow()).toBeLessThanOrEqual(0);
+    await pwExpect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
+    if (SCREENSHOTS) {
+      await page.waitForTimeout(400); // let the colour transition finish
+      await page.screenshot({ path: `${SCREENSHOTS}/hosted-phone-light.png`, fullPage: true });
+    }
+  });
+});

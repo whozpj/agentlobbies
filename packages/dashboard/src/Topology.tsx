@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { Agent, Message } from "./api";
 
-const WIDTH = 1000;
 const HEIGHT = 560;
-const HUB = { x: WIDTH / 2, y: HEIGHT / 2 };
+
+/** Drawing width: half as wide on a phone, so nodes and labels keep a readable size. */
+function drawingWidth(): number {
+  return window.innerWidth < 600 ? 500 : 1000;
+}
 const TYPE_COLORS: Record<Message["type"], string> = { question: "var(--question)", answer: "var(--answer)", update: "var(--update)" };
 
 interface Point {
@@ -18,11 +21,12 @@ interface Pulse {
   color: string;
 }
 
-function layout(agents: Agent[]): Map<string, Point> {
+/** Everyone on an ellipse around the relay, starting on the left. */
+function layout(agents: Agent[], hub: Point): Map<string, Point> {
   const positions = new Map<string, Point>();
   agents.forEach((agent, i) => {
     const angle = Math.PI + (2 * Math.PI * i) / agents.length;
-    positions.set(agent.handle, { x: HUB.x + 380 * Math.cos(angle), y: HUB.y + 200 * Math.sin(angle) });
+    positions.set(agent.handle, { x: hub.x + hub.x * 0.76 * Math.cos(angle), y: hub.y + 200 * Math.sin(angle) });
   });
   return positions;
 }
@@ -52,7 +56,9 @@ function Node({ agent, at, speaking, selected, onSelect }: { agent: Agent; at: P
 
 /** Everyone around the lobby's relay; each message travels sender → relay → recipients, colored by type. */
 export function Topology({ agents, latest, selected, onSelect }: { agents: Agent[]; latest: Message | undefined; selected: string | null; onSelect: (handle: string) => void }) {
-  const positions = layout(agents);
+  const width = drawingWidth();
+  const hub = { x: width / 2, y: HEIGHT / 2 };
+  const positions = layout(agents, hub);
   const [pulses, setPulses] = useState<Pulse[]>([]);
   const [speaking, setSpeaking] = useState<string | undefined>();
   const seen = useRef<string | undefined>(undefined);
@@ -77,26 +83,26 @@ export function Topology({ agents, latest, selected, onSelect }: { agents: Agent
   }, [latest]);
 
   return (
-    <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="topology" role="img" aria-label="Lobby topology">
+    <svg viewBox={`0 0 ${width} ${HEIGHT}`} className="topology" role="img" aria-label="Lobby topology">
       <defs>
         <clipPath id="avatar-clip"><circle r={18} /></clipPath>
       </defs>
       {agents.map((a) => {
         const p = positions.get(a.handle)!;
-        return <line key={a.agentId} x1={HUB.x} y1={HUB.y} x2={p.x} y2={p.y} className="spoke" />;
+        return <line key={a.agentId} x1={hub.x} y1={hub.y} x2={p.x} y2={p.y} className="spoke" />;
       })}
       {pulses.map((pulse) => (
         <g key={pulse.key}>
-          <polyline points={`${pulse.from.x},${pulse.from.y} ${HUB.x},${HUB.y} ${pulse.to.x},${pulse.to.y}`} className="trail" style={{ stroke: pulse.color }} />
+          <polyline points={`${pulse.from.x},${pulse.from.y} ${hub.x},${hub.y} ${pulse.to.x},${pulse.to.y}`} className="trail" style={{ stroke: pulse.color }} />
           <circle
             r={6}
             className="pulse"
             data-testid="pulse"
-            style={{ fill: pulse.color, color: pulse.color, "--x1": `${pulse.from.x}px`, "--y1": `${pulse.from.y}px`, "--x2": `${pulse.to.x}px`, "--y2": `${pulse.to.y}px` } as React.CSSProperties}
+            style={{ fill: pulse.color, color: pulse.color, "--x1": `${pulse.from.x}px`, "--y1": `${pulse.from.y}px`, "--xc": `${hub.x}px`, "--yc": `${hub.y}px`, "--x2": `${pulse.to.x}px`, "--y2": `${pulse.to.y}px` } as React.CSSProperties}
           />
         </g>
       ))}
-      <g transform={`translate(${HUB.x} ${HUB.y})`} className="hub">
+      <g transform={`translate(${hub.x} ${hub.y})`} className="hub">
         {pulses.length > 0 && <circle key={seen.current} r={34} className="hub-ring" />}
         <circle r={34} className="hub-body" />
         <path d="M-9 -9 0 -14 9 -9 9 1 0 6 -9 1Z M0 6v8" className="hub-glyph" />

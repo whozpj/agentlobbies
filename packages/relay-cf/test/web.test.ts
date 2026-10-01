@@ -1,7 +1,7 @@
 import { signEnvelope, webCrypto } from "@agentlobbies/protocol";
 import { ulid } from "ulid";
 import { beforeAll, describe, expect, it } from "vitest";
-import { ORIGIN, TestSocket, addAgent, addPerson, api, createInvite, createLobby, fakeGitHub, member, signIn, web, webSignIn, type Account } from "./client";
+import { ORIGIN, TestSocket, addAgent, addPerson, api, createInvite, createLobby, fakeGitHub, member, postJson, randomIp, signIn, web, webSignIn, type Account } from "./client";
 
 beforeAll(() => fakeGitHub());
 
@@ -205,5 +205,92 @@ describe("reaching your machines from the web", () => {
     await api("/v1/invites/accept", { method: "POST", headers: { authorization: `Bearer ${machine.token}`, "content-type": "application/json" }, body: JSON.stringify({ token }) });
     await daemon.next("lobbies" as never);
     await addPerson(lobby.lobbyId, "web-notified", machine);
+  });
+});
+
+describe("who can do what (security)", () => {
+  it("refuses a forged or swapped token in every place one is accepted", async () => {
+    const machine = await signIn("tokens");
+    const cookie = await webSignIn("tokens");
+    const session = cookie.split("=")[1]!;
+
+    expect((await web("/v1/me", `__Host-session=${session.slice(0, -4)}AAAA`)).status).toBe(401);
+    expect((await web("/v1/me", `__Host-session=${machine.token}`)).status).toBe(401);
+    expect((await api("/v1/me", { headers: { authorization: `Bearer ${session}` } })).status).toBe(401);
+
+    const machineWs = await api("/v1/me/ws", { headers: { Upgrade: "websocket", "Sec-WebSocket-Protocol": `agentlobbies.v1, account.${session}` } });
+    expect(machineWs.status).toBe(401);
+  });
+
+  it("keeps daemon-only routes away from browsers", async () => {
+    const cookie = await webSignIn("browser-only");
+    expect((await web("/v1/auth/box-key", cookie, { method: "POST", body: { boxPublicKey: "cHVi" } })).status).toBe(403);
+    expect((await web("/v1/auth/logout", cookie, { method: "POST", body: {} })).status).toBe(403);
+  });
+
+  it("refuses cookie deletes from another site", async () => {
+    const owner = await signIn("delete-owner");
+    const lobby = await createLobby("delete-owner", owner);
+    const agent = await addAgent(lobby.lobbyId, "web-claude", owner);
+    const cookie = await webSignIn("delete-owner");
+    const res = await web(`/v1/lobbies/${lobby.lobbyId}/agents/${agent.agentId}`, cookie, { method: "DELETE", origin: "https://evil.example" });
+    expect(res.status).toBe(403);
+    expect((await web(`/v1/lobbies/${lobby.lobbyId}/agents/${agent.agentId}`, cookie, { method: "DELETE" })).status).toBe(200);
+  });
+
+  it("only lets the owner invite, and only members see a lobby", async () => {
+    const lobby = await createLobby("gated");
+    const { token } = await createInvite(lobby);
+    const memberCookie = await webSignIn("gated-member");
+    await web("/v1/invites/accept", memberCookie, { method: "POST", body: { token } });
+    expect((await web(`/v1/lobbies/${lobby.lobbyId}/invites`, memberCookie, { method: "POST", body: {} })).status).toBe(403);
+
+    const strangerCookie = await webSignIn("gated-stranger");
+    expect((await web(`/v1/lobbies/${lobby.lobbyId}/events`, strangerCookie)).status).toBe(403);
+    expect((await web(`/v1/lobbies/${lobby.lobbyId}/members/gated-member`, strangerCookie, { method: "DELETE" })).status).toBe(403);
+    const lobbies = await (await web("/v1/lobbies", strangerCookie)).json<unknown[]>();
+    expect(lobbies).toEqual([]);
+  });
+
+  it("doesn't let a member remove someone else's agent, but lets the owner", async () => {
+    const owner = await signIn("agent-owner");
+    const lobby = await createLobby("agent-owner", owner);
+    const bob = await member(lobby, "agent-bob");
+    const carol = await member(lobby, "agent-carol");
+    const bobsAgent = await addAgent(lobby.lobbyId, "bob-claude", bob);
+    const remove = (as: Account) => api(`/v1/lobbies/${lobby.lobbyId}/agents/${bobsAgent.agentId}`, { method: "DELETE", headers: { authorization: `Bearer ${as.token}` } });
+    expect((await remove(carol)).status).toBe(403);
+    expect((await remove(owner)).status).toBe(200);
+  });
+
+  it("gives no keys to a socket whose machine has signed out", async () => {
+    const owner = await signIn("revoked");
+    const lobby = await createLobby("revoked", owner);
+    await postJson("/v1/auth/logout", {}, randomIp(), owner.token);
+    const ws = await TestSocket.open(lobby, owner);
+    await ws.hello();
+    const frame = await ws.next("keys");
+    expect(frame.mine).toEqual([]);
+    expect(frame.machines).toEqual([]);
+  });
+
+  it("gives a viewer's socket the key but no way to send", async () => {
+    const lobby = await createLobby("view-host");
+    const { token } = await createInvite(lobby, { role: "viewer" });
+    const viewer = await signIn("viewer-person");
+    await api("/v1/invites/accept", { method: "POST", headers: { authorization: `Bearer ${viewer.token}`, "content-type": "application/json" }, body: JSON.stringify({ token }) });
+    const seat = await addPerson(lobby.lobbyId, "viewer-person", viewer);
+    const ws = await TestSocket.open(seat, viewer);
+    const welcome = await ws.hello();
+    expect(welcome.role).toBe("observer");
+    expect((await ws.next("keys")).machines.map((m) => m.machineId)).toContain(viewer.machineId);
+
+    const envelope = await signEnvelope(webCrypto, seat.keys.secretKey, {
+      v: 2, id: ulid(), lobbyId: lobby.lobbyId, from: seat.agentId, to: { kind: "broadcast" },
+      type: "update", threadDepth: 0, sealed: { epoch: 1, iv: "aXZpdml2aXZpdml2", data: "Y2lwaGVydGV4dA" }, createdAt: Date.now(),
+    });
+    const reqId = ulid();
+    ws.send({ t: "send", reqId, envelope });
+    expect(await ws.next("err", (f) => f.reqId === reqId)).toMatchObject({ code: "forbidden" });
   });
 });

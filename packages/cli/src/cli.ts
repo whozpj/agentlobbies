@@ -17,7 +17,8 @@ const MESSAGES: Record<string, string> = {
   login_required: "Sign in first: run `agentlobbies login`.",
   no_seat: "You aren't in a lobby yet. Run `agentlobbies create`, or `agentlobbies accept <invite link>`.",
   invalid_invite: "That invite is invalid or expired. Ask the lobby owner for a new one.",
-  forbidden: "Only the lobby owner can do that.",
+  forbidden: "You don't have permission to do that in this lobby.",
+  waiting_for_key: "This lobby's encryption key hasn't reached this machine yet. It arrives when another member's machine is online.",
 };
 
 /** Runs `fn` with a daemon session for the CLI seat of the current folder. */
@@ -227,7 +228,8 @@ const status = defineCommand({
   meta: { description: "Show this folder's lobby and connection" },
   run: () => withLobby(async (call) => {
     const s = await call("lobby.status");
-    console.log(`${pc.bold(s.lobbyName ?? s.lobbyId.slice(0, 8))}: you are ${s.handle} (${s.role}), ${s.connection}, ${s.unread} unread`);
+    const encryption = s.keyEpoch > 0 ? "end-to-end encrypted" : "waiting for the encryption key";
+    console.log(`${pc.bold(s.lobbyName ?? s.lobbyId.slice(0, 8))}: you are ${s.handle} (${s.role}), ${s.connection}, ${encryption}, ${s.unread} unread`);
   }),
 });
 

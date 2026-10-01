@@ -243,7 +243,7 @@ p { margin: 0; }
 @keyframes travel {
   0% { transform: translate(var(--x1), var(--y1)); opacity: 0; }
   8% { opacity: 1; }
-  50% { transform: translate(500px, 280px); }
+  50% { transform: translate(var(--xc), var(--yc)); }
   92% { opacity: 1; }
   100% { transform: translate(var(--x2), var(--y2)); opacity: 0; }
 }
@@ -326,6 +326,8 @@ p { margin: 0; }
 .install { margin: 8px 0 0; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; overflow-x: auto; text-align: left; }
 .lock { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.6; vertical-align: -1px; margin-right: 2px; }
 .link-btn { background: none; border: 0; font: inherit; cursor: pointer; padding: 0; }
+.sign-out { color: var(--muted); white-space: nowrap; }
+.sign-out:hover { color: var(--text); }
 .msg-body.locked { color: var(--muted); font-size: 13px; }
 
 .people { background: none; border: 0; padding: 0; cursor: pointer; }

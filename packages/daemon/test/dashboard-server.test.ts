@@ -113,6 +113,24 @@ describe("dashboard server", () => {
     await expect(agent.call("lobby.status")).rejects.toMatchObject({ code: "no_seat" });
   });
 
+  it("lets the owner remove a person, but not themselves", async () => {
+    const { base, token } = await setup();
+    const q = `?token=${token}`;
+    const { lobbyId } = (await send(base, "POST", `/api/lobbies${q}`, { name: "people" })).body;
+    const { url } = (await send(base, "POST", `/api/lobbies/${lobbyId}/invites${q}`, { role: "member" })).body;
+
+    const guest = new Daemon({ home: mkdtempSync(join(tmpdir(), "al-home-")), relayUrl });
+    await guest.start();
+    running.push(guest);
+    await guest.call("account.login", { githubToken: freshUser("guest") });
+    await guest.call("invite.accept", { invite: url });
+
+    expect((await send(base, "DELETE", `/api/lobbies/${lobbyId}/members/tester${q}`)).status).toBe(400);
+    expect((await send(base, "DELETE", `/api/lobbies/${lobbyId}/members/guest${q}`)).status).toBe(200);
+    for (let i = 0; i < 50 && (await guest.call("dashboard.lobbies", {})).length > 0; i++) await new Promise((r) => setTimeout(r, 100));
+    expect(await guest.call("dashboard.lobbies", {})).toEqual([]);
+  });
+
   it("serves the app, with index.html for client-side routes", async () => {
     const { base } = await setup();
     expect((await get(base, "/assets/app.js")).type).toContain("javascript");

@@ -92,7 +92,7 @@ export function App() {
           {me
             ? <a className="user" href={`https://github.com/${me.login}`} target="_blank" rel="noreferrer"><Avatar url={me.avatarUrl} size={24} /><span className="user-login">@{me.login}</span></a>
             : <span className="muted">Not signed in · run <code>agentlobbies login</code></span>}
-          {isHosted && <button className="quiet link-btn" onClick={() => api.signOut().then(() => location.assign("/"))}>Sign out</button>}
+          {isHosted && <button className="link-btn sign-out" onClick={() => api.signOut().then(() => location.assign("/"))}>Sign out</button>}
         </div>
       </header>
       <main className="main">

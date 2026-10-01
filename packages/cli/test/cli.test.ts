@@ -108,6 +108,34 @@ describe("agentlobbies CLI", () => {
     expect(inbox.out).toContain("tester (question)");
   });
 
+  it("lets a view-only invitee watch but not send, and uses an invite up only once", async () => {
+    await cli(folder("x"), "create", "watch-only");
+    const invite = await cli(folder("x"), "invite", "--viewer", "--uses", "1");
+    const link = invite.out.match(/https?:\/\/\S+\/invite\/[\w-]+/)![0];
+
+    expect((await asPerson("dave", "accept", link)).out).toContain("Joined watch-only");
+    const sent = await asPerson("dave", "send", "all", "hello");
+    expect(sent.code).toBe(6);
+    expect(sent.out).toContain("permission");
+
+    const second = await asPerson("erin", "accept", link);
+    expect(second.code).toBe(4);
+  });
+
+  it("shows the lobby, your role, and that it is end-to-end encrypted", async () => {
+    await cli(folder("x"), "create", "status-check");
+    const status = await eventually(() => cli(folder("x"), "status"), "end-to-end encrypted");
+    expect(status.out).toMatch(/you are tester \(host\), live, end-to-end encrypted, 0 unread/);
+  });
+
+  it("signs out, after which lobby commands ask you to sign in again", async () => {
+    await asPerson("frank", "create", "franks");
+    expect((await asPerson("frank", "logout")).out).toContain("Signed out.");
+    const r = await asPerson("frank", "create", "again");
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("agentlobbies login");
+  });
+
   it("exits with code 4 for an invalid invite", async () => {
     const r = await cli(folder("x"), "accept", "https://relay.test/invite/not-a-real-invite-token-xx");
     expect(r.code).toBe(4);
