@@ -29,16 +29,12 @@ export const ServerFrame = z.discriminatedUnion("t", [
   }),
   z.object({ t: z.literal("events"), events: z.array(LobbyEvent), more: z.boolean() }),
   z.object({ t: z.literal("event"), event: LobbyEvent }),
-  z.object({ t: z.literal("ok"), reqId: Ulid, seq: Seq.optional(), held: z.boolean().optional(), entry: BoardEntry.optional() }),
+  z.object({ t: z.literal("ok"), reqId: Ulid, seq: Seq.optional(), entry: BoardEntry.optional() }),
   z.object({
     t: z.literal("err"), reqId: Ulid.optional(), code: z.string(), message: z.string(),
     retryAfterMs: Ms.optional(), current: BoardEntry.optional(),
   }),
   z.object({ t: z.literal("roster"), agent: AgentProfile }),
-  z.object({
-    t: z.literal("held"), count: z.number().int().min(0),
-    latest: z.object({ envelopeId: Ulid, from: Ulid, preview: z.string().max(200) }).optional(),
-  }),
   z.object({ t: z.literal("notice"), kind: z.literal("rate_limited"), agentId: Ulid }),
   // Lobby keys, sealed to machines (LLD 15.4).
   z.object({

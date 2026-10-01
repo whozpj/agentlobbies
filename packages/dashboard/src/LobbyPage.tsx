@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, isHosted, lobbyName, type Agent, type Lobby, type Me, type Message, type MyAgent } from "./api";
+import { api, isHosted, lobbyName, peopleIn, type Agent, type Lobby, type Me, type Message, type MyAgent } from "./api";
 import { MessageFeed } from "./MessageFeed";
 import { Topology } from "./Topology";
 import { Avatar, CopyLink, InstallSteps, LockIcon, Modal, StatusDot } from "./ui";
@@ -10,7 +10,17 @@ function InviteModal({ lobby, onClose }: { lobby: Lobby; onClose: () => void }) 
   const [role, setRole] = useState<"member" | "viewer">("member");
   const [link, setLink] = useState("");
   const [error, setError] = useState("");
-  const choose = (r: "member" | "viewer") => { setRole(r); setLink(""); };
+  const choose = (r: "member" | "viewer") => {
+    setRole(r);
+    setLink("");
+  };
+  const createLink = async () => {
+    try {
+      setLink((await api.invite(lobby.lobbyId, role)).url);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
   return (
     <Modal title="Invite people" onClose={onClose} footer={<button className="btn" onClick={onClose}>Done</button>}>
       <div className="segmented" role="group" aria-label="They can">
@@ -22,7 +32,7 @@ function InviteModal({ lobby, onClose }: { lobby: Lobby; onClose: () => void }) 
             <CopyLink text={link} />
             <p className="muted">Anyone with this link can join after signing in with GitHub. It expires in 7 days.</p>
           </>
-        : <button className="btn primary" onClick={() => api.invite(lobby.lobbyId, role).then((r) => setLink(r.url), (e: Error) => setError(e.message))}>Create invite link</button>}
+        : <button className="btn primary" onClick={createLink}>Create invite link</button>}
       {error && <p className="error">{error}</p>}
     </Modal>
   );
@@ -41,10 +51,16 @@ function AddAgentModal({ lobby, agents, onClose }: { lobby: Lobby; agents: MyAge
   const [key, setKey] = useState(available[0] ? agentKey(available[0]) : "");
   const [owns, setOwns] = useState("");
   const [error, setError] = useState("");
-  const add = () => {
+  const add = async () => {
     const agent = available.find((a) => agentKey(a) === key);
     if (!agent) return;
-    api.addAgent(lobby.lobbyId, agent, owns.split(",").map((o) => o.trim()).filter(Boolean)).then(onClose, (e: Error) => setError(e.message));
+    const areas = owns.split(",").map((o) => o.trim()).filter(Boolean);
+    try {
+      await api.addAgent(lobby.lobbyId, agent, areas);
+      onClose();
+    } catch (e) {
+      setError((e as Error).message);
+    }
   };
   return (
     <Modal title="Add an agent" onClose={onClose}
@@ -73,13 +89,15 @@ function AddAgentModal({ lobby, agents, onClose }: { lobby: Lobby; agents: MyAge
 function PeopleModal({ lobby, me, onClose }: { lobby: Lobby; me: Me | null; onClose: () => void }) {
   const [error, setError] = useState("");
   const isOwner = lobby.myRole === "host";
-  // A person has a seat on each of their machines; list them once.
-  const people = [...new Map(lobby.roster.filter((a) => a.client === "cli" && a.owner).map((a) => [a.owner!.login, a])).values()];
-  const remove = (login: string) => {
-    api.removeMember(lobby.lobbyId, login).then(() => {
+  const people = peopleIn(lobby);
+  const remove = async (login: string) => {
+    try {
+      await api.removeMember(lobby.lobbyId, login);
       if (login === me?.login) location.hash = "#/";
       onClose();
-    }, (e: Error) => setError(e.message));
+    } catch (e) {
+      setError((e as Error).message);
+    }
   };
   return (
     <Modal title="People" onClose={onClose} footer={<button className="btn" onClick={onClose}>Done</button>}>
@@ -130,7 +148,7 @@ export function LobbyPage({ lobby, me, agents: myAgents, onChange }: { lobby: Lo
   const [selected, setSelected] = useState<string | null>(null);
   const isOwner = lobby.myRole === "host";
   const canAdd = lobby.myRole === "host" || lobby.myRole === "member";
-  const people = [...new Map(lobby.roster.filter((a) => a.client === "cli" && a.owner).map((a) => [a.owner!.login, a])).values()];
+  const people = peopleIn(lobby);
   const agents = lobby.roster.filter((a) => a.client !== "cli");
   const close = () => { setDialog(null); onChange(); };
 

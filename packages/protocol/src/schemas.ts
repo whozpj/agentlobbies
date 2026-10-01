@@ -70,7 +70,6 @@ export const Envelope = z.object({
   body: z.string().min(1).optional(),
   attachments: z.array(Attachment).max(LIMITS.maxAttachmentsPerEnvelope).optional(),
   sealed: Sealed.optional(),
-  requiresApproval: z.boolean().optional(),
   createdAt: Ms,
   sig: B64u,
 }).refine(
@@ -101,14 +100,11 @@ export const BoardEntry = z.object({
 
 export const LobbySettings = z.object({
   name: z.string().max(64).optional(),
-  approvalMode: z.enum(["off", "flagged", "all"]).default("off"),
   maxThreadDepth: z.number().int().min(1).max(LIMITS.maxThreadDepthCeiling).default(LIMITS.maxThreadDepthDefault),
   sendPerMinute: z.number().int().min(1).max(120).default(30),
   historyOnJoin: z.enum(["full", "since_join"]).default("full"),
   observersSeeDirects: z.boolean().default(false),
 });
-
-export const RejectReason = z.enum(["rejected_by_host", "sender_inactive", "recipient_inactive", "parent_missing", "thread_too_deep"]);
 
 export const SystemEvent = z.discriminatedUnion("type", [
   z.object({ type: z.literal("lobby_created"), hostId: Ulid.optional() }),
@@ -116,7 +112,6 @@ export const SystemEvent = z.discriminatedUnion("type", [
   z.object({ type: z.literal("left"), agentId: Ulid, reason: z.enum(["left", "kicked", "never_connected"]) }),
   z.object({ type: z.literal("role_changed"), agentId: Ulid, role: Role, by: Ulid }),
   z.object({ type: z.literal("settings_changed"), settings: LobbySettings }),
-  z.object({ type: z.literal("approval_rejected"), envelopeId: Ulid, from: Ulid, reason: RejectReason }),
   z.object({ type: z.literal("closing") }),
 ]);
 
@@ -139,6 +134,5 @@ export type Sealed = z.infer<typeof Sealed>;
 export type MessageMeta = z.infer<typeof MessageMeta>;
 export type BoardEntry = z.infer<typeof BoardEntry>;
 export type LobbySettings = z.infer<typeof LobbySettings>;
-export type RejectReason = z.infer<typeof RejectReason>;
 export type SystemEvent = z.infer<typeof SystemEvent>;
 export type LobbyEvent = z.infer<typeof LobbyEvent>;

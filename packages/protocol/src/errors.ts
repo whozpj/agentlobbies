@@ -8,11 +8,10 @@ const STATUS = {
   forbidden: 403,
   kicked: 403,
   not_found: 404,
-  invalid_code: 404,
+  invalid_invite: 404,
   handle_taken: 409,
   version_conflict: 409,
   duplicate: 409,
-  already_rejected: 409,
   lobby_full: 409,
   machine_offline: 409,
   lobby_closed: 410,
@@ -22,7 +21,6 @@ const STATUS = {
   unknown_recipient: 422,
   rate_limited: 429,
   board_full: 429,
-  held_full: 429,
   internal: 500,
 } as const;
 

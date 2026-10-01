@@ -61,6 +61,15 @@ export type Activity =
 
 export const lobbyName = (l: Lobby) => l.name ?? l.lobbyId.slice(0, 8);
 
+/** People in a lobby, once each: a person has a seat on each of their machines. */
+export function peopleIn(lobby: Lobby): Agent[] {
+  const byLogin = new Map<string, Agent>();
+  for (const seat of lobby.roster) {
+    if (seat.client === "cli" && seat.owner && !byLogin.has(seat.owner.login)) byLogin.set(seat.owner.login, seat);
+  }
+  return [...byLogin.values()];
+}
+
 // `agentlobbies dashboard` opens the app with a token for the local daemon. Without one, it is the hosted dashboard.
 const token = new URLSearchParams(location.search).get("token") ?? "";
 export const isHosted = token === "";
@@ -72,8 +81,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
-const send = <T>(method: string, path: string, body?: unknown) =>
-  request<T>(path, { method, headers: { "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+function send<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const init: RequestInit = { method, headers: { "content-type": "application/json" } };
+  if (body !== undefined) init.body = JSON.stringify(body);
+  return request<T>(path, init);
+}
 
 const SEAT_ROLE = { owner: "host", member: "member", viewer: "observer" } as const;
 

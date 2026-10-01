@@ -171,7 +171,8 @@ export class LobbyDurableObject extends DurableObject<Env> {
     const agent = getAgent(sql, agentId);
     if (!open || !isActive(agent)) {
       this.ctx.acceptWebSocket(server);
-      server.close(open ? 4003 : 4010, open ? "not a member" : "lobby closed");
+      if (open) server.close(4003, "not a member");
+      else server.close(4010, "lobby closed");
       return new Response(null, { status: 101, webSocket: client, headers });
     }
 
@@ -180,10 +181,10 @@ export class LobbyDurableObject extends DurableObject<Env> {
     // The machine counts only if it belongs to the agent's owner (LLD 15.3).
     const machineId = req.headers.get("X-Machine-Id");
     const sameOwner = machineId !== null && agent.owner_id === req.headers.get("X-User-Id");
+    const attachment: SocketAttachment = { agentId, state: "awaiting_hello", connectedAt: Date.now() };
+    if (sameOwner) attachment.machineId = machineId;
     this.ctx.acceptWebSocket(server, [agentId]);
-    server.serializeAttachment({
-      agentId, state: "awaiting_hello", connectedAt: Date.now(), ...(sameOwner ? { machineId } : {}),
-    } satisfies SocketAttachment);
+    server.serializeAttachment(attachment);
     return new Response(null, { status: 101, webSocket: client, headers });
   }
 
@@ -243,7 +244,7 @@ export class LobbyDurableObject extends DurableObject<Env> {
     att.helloAt = Date.now();
     ws.serializeAttachment(att);
     this.setStatus(att.agentId, "active");
-    this.send(ws, {
+    const welcome: Extract<ServerFrame, { t: "welcome" }> = {
       t: "welcome",
       agentId: att.agentId,
       role: agent.role as Role,
@@ -252,8 +253,10 @@ export class LobbyDurableObject extends DurableObject<Env> {
       board: [],
       settings,
       subscriptions: this.subscriptionsOf(att.agentId),
-      ...(after + 1 < minRetained ? { truncatedBefore: minRetained } : {}),
-    });
+    };
+    // Older history was archived, so the agent knows its replay starts later than it asked.
+    if (after + 1 < minRetained) welcome.truncatedBefore = minRetained;
+    this.send(ws, welcome);
     // Keys before history, so the replayed messages can be decrypted as they arrive.
     this.send(ws, keysFrame(sql, att.machineId, machines));
     this.sendPage(ws, att, after);
@@ -293,8 +296,8 @@ export class LobbyDurableObject extends DurableObject<Env> {
 
     const result = doSend(this.ctx.storage, att.agentId, e, Date.now());
     if ("error" in result) return this.sendErr(ws, frame.reqId, result.error, undefined, result.retryAfterMs);
-    this.send(ws, { t: "ok", reqId: frame.reqId, ...("held" in result ? { held: true } : { seq: result.seq }) });
-    if ("event" in result && result.event) this.fanOut(result.event);
+    this.send(ws, { t: "ok", reqId: frame.reqId, seq: result.seq });
+    if (result.event) this.fanOut(result.event);
   }
 
   private async onKeysPut(ws: WebSocket, att: SocketAttachment, frame: Extract<ClientFrame, { t: "keys.put" }>): Promise<void> {
@@ -442,6 +445,9 @@ export class LobbyDurableObject extends DurableObject<Env> {
   }
 
   private sendErr(ws: WebSocket, reqId: string | undefined, code: string, message = code, retryAfterMs?: number): void {
-    this.send(ws, { t: "err", ...(reqId ? { reqId } : {}), code, message, ...(retryAfterMs ? { retryAfterMs } : {}) });
+    const frame: Extract<ServerFrame, { t: "err" }> = { t: "err", code, message };
+    if (reqId) frame.reqId = reqId;
+    if (retryAfterMs) frame.retryAfterMs = retryAfterMs;
+    this.send(ws, frame);
   }
 }

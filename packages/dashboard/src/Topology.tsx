@@ -62,10 +62,11 @@ export function Topology({ agents, latest, selected, onSelect }: { agents: Agent
     seen.current = latest.id;
     const from = positions.get(latest.from);
     if (!from) return;
-    const added = recipients(latest, agents)
-      .map((handle) => positions.get(handle))
-      .filter((to): to is Point => Boolean(to))
-      .map((to, i) => ({ key: `${latest.id}-${i}`, from, to, color: TYPE_COLORS[latest.type] }));
+    const added: Pulse[] = [];
+    for (const handle of recipients(latest, agents)) {
+      const to = positions.get(handle);
+      if (to) added.push({ key: `${latest.id}-${handle}`, from, to, color: TYPE_COLORS[latest.type] });
+    }
     setPulses((current) => [...current, ...added]);
     setSpeaking(latest.from);
     const timer = setTimeout(() => {

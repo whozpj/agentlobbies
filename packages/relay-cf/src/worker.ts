@@ -248,18 +248,18 @@ async function createInvite(req: Request, env: Env, params: Params): Promise<Res
 /** What an invite page shows before someone accepts. */
 async function previewInvite(req: Request, env: Env, params: Params): Promise<Response> {
   const ip = req.headers.get("cf-connecting-ip") ?? "unknown";
-  if (!(await env.CODE_LIMITER.limit({ key: ip })).success) throw new ProtocolError("rate_limited");
+  if (!(await env.INVITE_LIMITER.limit({ key: ip })).success) throw new ProtocolError("rate_limited");
   const invite = await env.DB.prepare(
     `SELECT i.role, l.name, u.login FROM invites i JOIN lobbies l ON l.lobby_id = i.lobby_id JOIN users u ON u.user_id = i.created_by
      WHERE i.token_hash = ? AND i.expires_at > ? AND (i.max_uses IS NULL OR i.uses < i.max_uses)`,
   ).bind(await sha256Hex(params.token ?? ""), Date.now()).first<{ role: string; name: string | null; login: string }>();
-  if (!invite) throw new ProtocolError("invalid_code", "that invite is invalid, expired, or used up");
+  if (!invite) throw new ProtocolError("invalid_invite", "that invite is invalid, expired, or used up");
   return Response.json({ lobbyName: invite.name, role: invite.role, invitedBy: invite.login });
 }
 
 async function acceptInvite(req: Request, env: Env): Promise<Response> {
   const ip = req.headers.get("cf-connecting-ip") ?? "unknown";
-  if (!(await env.CODE_LIMITER.limit({ key: ip })).success) throw new ProtocolError("rate_limited");
+  if (!(await env.INVITE_LIMITER.limit({ key: ip })).success) throw new ProtocolError("rate_limited");
   const account = await requireAccount(req, env);
   const { token } = await parseBody(req, AcceptInviteBody);
 
@@ -268,7 +268,7 @@ async function acceptInvite(req: Request, env: Env): Promise<Response> {
      WHERE token_hash = ? AND expires_at > ? AND (max_uses IS NULL OR uses < max_uses)
      RETURNING lobby_id, role`,
   ).bind(await sha256Hex(token), Date.now()).first<{ lobby_id: string; role: "member" | "viewer" }>();
-  if (!invite) throw new ProtocolError("invalid_code", "that invite is invalid, expired, or used up");
+  if (!invite) throw new ProtocolError("invalid_invite", "that invite is invalid, expired, or used up");
 
   await env.DB.prepare("INSERT OR IGNORE INTO lobby_members (lobby_id, user_id, role, added_at) VALUES (?, ?, ?, ?)")
     .bind(invite.lobby_id, account.userId, invite.role, Date.now()).run();
@@ -351,7 +351,8 @@ async function seatSocket(req: Request, env: Env, params: Params): Promise<Respo
   headers.delete("X-Machine-Id");
   headers.delete("X-User-Id");
   const accountToken = tokenFromSubprotocol(req, "account");
-  const machine = accountToken ? await accountFromToken(env, accountToken).catch(() => undefined) : undefined;
+  let machine: Account | undefined;
+  if (accountToken) machine = await accountFromToken(env, accountToken);
   if (machine?.machineId) {
     headers.set("X-Machine-Id", machine.machineId);
     headers.set("X-User-Id", machine.userId);
@@ -458,7 +459,13 @@ function userStub(env: Env, userId: string) {
 }
 
 async function parseBody<T extends z.ZodTypeAny>(req: Request, schema: T): Promise<z.infer<T>> {
-  const parsed = schema.safeParse(await req.json().catch(() => undefined));
+  let json: unknown;
+  try {
+    json = await req.json();
+  } catch {
+    json = undefined; // not JSON; the schema reports it
+  }
+  const parsed = schema.safeParse(json);
   if (!parsed.success) throw new ProtocolError("bad_request", parsed.error.issues[0]?.message ?? "invalid body");
   return parsed.data;
 }

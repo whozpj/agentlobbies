@@ -37,10 +37,6 @@ describe("ServerFrame", () => {
     expect(ServerFrame.safeParse(frame).success).toBe(true);
   });
 
-  it("parses the held frame for hosts (G24)", () => {
-    const f = { t: "held", count: 2, latest: { envelopeId: MSG_ID, from: AGENT_A, preview: "please run" } };
-    expect(ServerFrame.safeParse(f).success).toBe(true);
-  });
 
   it("parses a rate-limit notice (G11)", () => {
     expect(ServerFrame.safeParse({ t: "notice", kind: "rate_limited", agentId: AGENT_A }).success).toBe(true);

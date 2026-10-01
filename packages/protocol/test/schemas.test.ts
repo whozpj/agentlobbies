@@ -66,12 +66,6 @@ describe("LobbyEvent", () => {
     expect(LobbyEvent.safeParse(limited).success).toBe(false);
   });
 
-  it("requires a reason on approval_rejected (H12)", () => {
-    const base = { kind: "system", seq: 3, committedAt: 1, system: { type: "approval_rejected", envelopeId: MSG_ID, from: AGENT_A } };
-    expect(LobbyEvent.safeParse(base).success).toBe(false);
-    expect(LobbyEvent.safeParse({ ...base, system: { ...base.system, reason: "sender_inactive" } }).success).toBe(true);
-  });
-
   it("parses a board delete event (G37)", () => {
     const ev = { kind: "board", seq: 4, committedAt: 1, entry: { key: "schema", value: "", author: AGENT_A, version: 3, seq: 4, updatedAt: 1, deleted: true } };
     expect(LobbyEvent.safeParse(ev).success).toBe(true);
@@ -81,7 +75,7 @@ describe("LobbyEvent", () => {
 describe("defaults", () => {
   it("fills lobby settings defaults", () => {
     expect(LobbySettings.parse({})).toEqual({
-      approvalMode: "off", maxThreadDepth: 6, sendPerMinute: 30, historyOnJoin: "full", observersSeeDirects: false,
+      maxThreadDepth: 6, sendPerMinute: 30, historyOnJoin: "full", observersSeeDirects: false,
     });
   });
 

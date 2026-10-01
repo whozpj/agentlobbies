@@ -5,7 +5,7 @@ describe("errors", () => {
   it("maps codes to the HTTP statuses in section 3.6", () => {
     expect(httpStatusOf("bad_request")).toBe(400);
     expect(httpStatusOf("version_conflict")).toBe(409);
-    expect(httpStatusOf("already_rejected")).toBe(409);
+    expect(httpStatusOf("handle_taken")).toBe(409);
     expect(httpStatusOf("lobby_closed")).toBe(410);
     expect(httpStatusOf("rate_limited")).toBe(429);
   });

@@ -52,6 +52,12 @@ export interface SurfacedMessage {
   attachments?: Envelope["attachments"];
 }
 
+/** An invite can be pasted as the whole link or just the token at its end. */
+function inviteToken(invite: string): string {
+  const parts = invite.trim().split("/");
+  return parts[parts.length - 1] ?? "";
+}
+
 function expiresWithinAnHour(jwt: string): boolean {
   try {
     const { exp } = JSON.parse(Buffer.from(jwt.split(".")[1]!, "base64url").toString("utf8")) as { exp: number };
@@ -161,7 +167,13 @@ export class Daemon extends EventEmitter {
 
     "account.logout": async () => {
       const account = this.db.account();
-      if (account) await this.relay("/v1/auth/logout", {}, account.token).catch(() => {});
+      if (account) {
+        try {
+          await this.relay("/v1/auth/logout", {}, account.token);
+        } catch {
+          // Signing out on this machine still works when the relay can't be reached.
+        }
+      }
       this.userLink?.stop();
       this.userLink = undefined;
       this.db.clearAccount();
@@ -204,13 +216,14 @@ export class Daemon extends EventEmitter {
 
     "invite.create": async (p) => {
       const lobbyId = String(p.lobbyId ?? this.seat(p).lobby_id);
-      return this.relay(`/v1/lobbies/${lobbyId}/invites`, { role: p.role ?? "member", ...(p.maxUses ? { maxUses: Number(p.maxUses) } : {}) },
-                        await this.accountToken());
+      const body: { role: unknown; maxUses?: number } = { role: p.role ?? "member" };
+      if (p.maxUses) body.maxUses = Number(p.maxUses);
+      return this.relay(`/v1/lobbies/${lobbyId}/invites`, body, await this.accountToken());
     },
 
     "invite.accept": async (p) => {
       this.requireAccount();
-      const token = String(p.invite ?? "").trim().split("/").pop() ?? "";
+      const token = inviteToken(String(p.invite ?? ""));
       const res = await this.relay<{ lobbyId: string; name: string | null; role: string }>("/v1/invites/accept", { token }, await this.accountToken());
       await this.syncMemberships();
       return res;
@@ -241,7 +254,7 @@ export class Daemon extends EventEmitter {
       const seat = this.addSeat(local.seat_key, { lobbyId, lobbyName: you.lobby_name, agentId: res.agentId, handle: res.handle, role: "member", token: res.token }, keys.secretKey);
       this.db.addNotice(seat.seat_id,
         `You were added to lobby ${you.lobby_name ?? lobbyId.slice(0, 8)} by @${account.login} as ${res.handle}. Call lobby_players to see who's here.`);
-      this.inboxWaiters.get(seat.seat_id)?.({ unread: this.db.unreadCount(seat.seat_id) });
+      this.wakeWaiter(seat.seat_id);
       this.emit("activity", { type: "agents" });
       return { agentId: res.agentId, handle: res.handle };
     },
@@ -299,7 +312,7 @@ export class Daemon extends EventEmitter {
     "inbox.peek": async (p) => ({ unread: this.db.unreadCount(this.seat(p).seat_id) }),
 
     "dashboard.start": async () => {
-      this.dashboard ??= await startDashboard(this, this.opts.dashboardDir);
+      if (!this.dashboard) this.dashboard = await startDashboard(this, this.opts.dashboardDir);
       return { url: this.dashboard.url };
     },
 
@@ -332,7 +345,8 @@ export class Daemon extends EventEmitter {
       const seatId = this.seat(p).seat_id;
       const unread = this.db.unreadCount(seatId);
       if (unread > 0) return { unread };
-      this.inboxWaiters.get(seatId)?.({ cancelled: true });
+      const older = this.inboxWaiters.get(seatId);
+      if (older) older({ cancelled: true });
       return new Promise((resolve) => {
         const finish = (result: { unread: number } | { cancelled: true }) => {
           clearTimeout(timer);
@@ -353,31 +367,43 @@ export class Daemon extends EventEmitter {
   };
 
 
-  private async sendMessage(seat: Seat, p: Params): Promise<{ id: string; seq?: number; held?: boolean; queued?: boolean }> {
+  private async sendMessage(seat: Seat, p: Params): Promise<{ id: string; seq?: number; queued?: boolean }> {
     const body = String(p.body ?? "");
     const attachments = (p.attachments ?? undefined) as Envelope["attachments"];
-    const secret = findSecret([body, ...(attachments ?? []).map((a) => a.content)].join("\n"));
+    const texts = [body];
+    let attachmentBytes = 0;
+    for (const attachment of attachments ?? []) {
+      texts.push(attachment.content);
+      attachmentBytes += Buffer.byteLength(attachment.content);
+    }
+    const secret = findSecret(texts.join("\n"));
     if (secret && !p.allowSecret) throw new DaemonError("secret_detected", `message contains what looks like a secret (${secret})`);
     if (Buffer.byteLength(body) > LIMITS.maxBodyBytes) throw new DaemonError("too_large", "message is too long (16 KB at most)");
-    const attachmentBytes = (attachments ?? []).reduce((n, a) => n + Buffer.byteLength(a.content), 0);
     if (attachmentBytes > LIMITS.maxAttachmentBytesTotal) throw new DaemonError("too_large", "attachments are too large (64 KB at most)");
 
-    const inReplyTo = p.inReplyTo ? String(p.inReplyTo) : undefined;
-    const parent = inReplyTo ? this.db.findEnvelope(seat.seat_id, inReplyTo) : undefined;
-    if (inReplyTo && !parent) throw new DaemonError("bad_reply", `no message with id ${inReplyTo}`);
+    let parent: Envelope | undefined;
+    if (p.inReplyTo) {
+      parent = this.db.findEnvelope(seat.seat_id, String(p.inReplyTo));
+      if (!parent) throw new DaemonError("bad_reply", `no message with id ${p.inReplyTo}`);
+    }
+
+    // A reply with no recipient goes back to whoever asked.
+    let to: Recipient;
+    if (p.to === undefined && parent) to = { kind: "direct", agentId: parent.from };
+    else to = this.resolveTo(seat, String(p.to ?? "all"));
 
     const lobbyKey = await this.waitForLobbyKey(seat.lobby_id);
     const id = ulid();
     const type = (p.type ?? "update") as Envelope["type"];
-    const sealed = encryptContent(lobbyKey.key, { lobbyId: seat.lobby_id, id, from: seat.agent_id, type, epoch: lobbyKey.epoch },
-      attachments ? { body, attachments } : { body });
-    const envelope = await signEnvelope(webCrypto, loadKey(this.opts.home, seat.seat_id), {
-      v: 2, id, lobbyId: seat.lobby_id, from: seat.agent_id,
-      to: p.to === undefined && parent ? { kind: "direct", agentId: parent.from } : this.resolveTo(seat, String(p.to ?? "all")),
-      type, threadDepth: parent ? parent.threadDepth + 1 : 0,
-      sealed, createdAt: Date.now(),
-      ...(inReplyTo ? { inReplyTo } : {}),
-    });
+    const content = attachments ? { body, attachments } : { body };
+    const sealed = encryptContent(lobbyKey.key, { lobbyId: seat.lobby_id, id, from: seat.agent_id, type, epoch: lobbyKey.epoch }, content);
+
+    const unsigned: Omit<Envelope, "sig"> = {
+      v: 2, id, lobbyId: seat.lobby_id, from: seat.agent_id, to, type,
+      threadDepth: parent ? parent.threadDepth + 1 : 0, sealed, createdAt: Date.now(),
+    };
+    if (parent) unsigned.inReplyTo = parent.id;
+    const envelope = await signEnvelope(webCrypto, loadKey(this.opts.home, seat.seat_id), unsigned);
 
     // The outbox keeps the signed frame, so retries after a reconnect reuse the same envelope id (I5).
     const reqId = ulid();
@@ -390,7 +416,7 @@ export class Daemon extends EventEmitter {
     const reply = await this.waitForReply(reqId);
     if (!reply) return { id: envelope.id, queued: true };
     if (reply.t === "err") throw new DaemonError(reply.code, reply.message);
-    return { id: envelope.id, ...(reply.seq ? { seq: reply.seq } : {}), ...(reply.held ? { held: true } : {}) };
+    return { id: envelope.id, seq: reply.seq };
   }
 
   private waitForReply(reqId: string): Promise<OkOrErr | undefined> {
@@ -429,7 +455,10 @@ export class Daemon extends EventEmitter {
     const conn: Connection = new Connection({
       url: `${seat.relay_url.replace(/^http/, "ws")}/v1/lobbies/${seat.lobby_id}/ws`,
       token: () => this.tokenFor(seat.seat_id),
-      accountToken: () => (this.db.account() ? this.accountToken() : Promise.resolve(undefined)),
+      accountToken: async () => {
+        if (!this.db.account()) return undefined;
+        return this.accountToken();
+      },
       onRejected: () => this.rejectedTokens.add(seat.seat_id),
       clientVersion: CLIENT_VERSION,
       cursor: () => this.db.cursor(seat.seat_id),
@@ -447,8 +476,12 @@ export class Daemon extends EventEmitter {
     if (!expiresWithinAnHour(account.token)) return account.token;
     const ts = Date.now();
     const sig = await webCrypto.sign(loadKey(this.opts.home, "machine"), refreshSigningBytes({ lobbyId: "account", agentId: account.machine_id, ts }));
-    const { token } = await this.relay<{ token: string }>("/v1/auth/refresh", { machineId: account.machine_id, ts, sig: toB64u(sig) })
-      .catch(() => { throw new DaemonError("login_required", "Your sign-in expired. Run `agentlobbies login` again."); });
+    let token: string;
+    try {
+      ({ token } = await this.relay<{ token: string }>("/v1/auth/refresh", { machineId: account.machine_id, ts, sig: toB64u(sig) }));
+    } catch {
+      throw new DaemonError("login_required", "Your sign-in expired. Run `agentlobbies login` again.");
+    }
     this.db.setAccountToken(token);
     return token;
   }
@@ -499,11 +532,13 @@ export class Daemon extends EventEmitter {
         this.db.upsertRoster(seat.seat_id, [frame.agent]);
         this.emit("activity", { type: "roster", lobbyId: seat.lobby_id });
         return;
-      case "events":
+      case "events": {
         this.store(seat, frame.events);
-        if (frame.events.length > 0) conn.send({ t: "ack", seq: frame.events.at(-1)!.seq });
-        if (frame.more) conn.send({ t: "replay.more", afterSeq: frame.events.at(-1)?.seq ?? this.db.cursor(seat.seat_id) });
+        const last = frame.events.at(-1);
+        if (last) conn.send({ t: "ack", seq: last.seq });
+        if (frame.more) conn.send({ t: "replay.more", afterSeq: last ? last.seq : this.db.cursor(seat.seat_id) });
         return;
+      }
       case "event":
         this.store(seat, [frame.event]);
         this.ackSoon(seat.seat_id, conn, frame.event.seq);
@@ -518,15 +553,25 @@ export class Daemon extends EventEmitter {
   /** Stores events and moves the cursor. Callers ack only after this, so a crash can only cause a harmless redelivery (I13). */
   private store(seat: Seat, received: LobbyEvent[]): void {
     if (received.length === 0) return;
+    const events: LobbyEvent[] = [];
     const locked = new Set<string>();
     const broken: string[] = [];
-    const events = received.map((e) => {
-      if (e.kind !== "message") return e;
+    for (const e of received) {
+      if (e.kind !== "message") {
+        events.push(e);
+        continue;
+      }
       const opened = this.openEnvelope(seat.lobby_id, e.envelope);
-      if (opened === "locked") locked.add(e.envelope.id);
-      if (opened === "broken") broken.push(e.envelope.id);
-      return typeof opened === "string" ? e : { ...e, envelope: opened };
-    });
+      if (opened === "locked") {
+        locked.add(e.envelope.id);
+        events.push(e);
+      } else if (opened === "broken") {
+        broken.push(e.envelope.id);
+        events.push(e);
+      } else {
+        events.push({ ...e, envelope: opened });
+      }
+    }
     this.db.ingest(seat.seat_id, events, locked);
     // A message that fails authentication was changed or forged; it is never shown.
     for (const id of broken) this.db.markSurfaced(seat.seat_id, id);
@@ -538,16 +583,23 @@ export class Daemon extends EventEmitter {
     this.db.setCursor(seat.seat_id, last);
     for (const e of events) this.emitMessage(seat, e);
     if (events.some((e) => e.kind === "system")) this.emit("activity", { type: "roster", lobbyId: seat.lobby_id });
-    const unread = this.db.unreadCount(seat.seat_id);
-    if (unread > 0) {
-      this.inboxWaiters.get(seat.seat_id)?.({ unread });
-      this.emit("notify", { method: "inbox.new", params: { seatId: seat.seat_id, unread } });
-    }
+    if (this.db.unreadCount(seat.seat_id) > 0) this.wakeWaiter(seat.seat_id);
+  }
+
+  /** Tells whoever waits on this seat's inbox (the Stop hook, an MCP server) how many messages are unread. */
+  private wakeWaiter(seatId: string): void {
+    const unread = this.db.unreadCount(seatId);
+    const waiter = this.inboxWaiters.get(seatId);
+    if (waiter) waiter({ unread });
+    this.emit("notify", { method: "inbox.new", params: { seatId, unread } });
   }
 
   /** Acks live events every 250 ms or 20 events, whichever comes first, to save relay writes (LLD 7.5). */
   private ackSoon(seatId: string, conn: Connection, seq: number): void {
-    const pending = this.pendingAcks.get(seatId) ?? { seq, count: 0, conn, timer: setTimeout(() => this.flushAck(seatId), 250) };
+    let pending = this.pendingAcks.get(seatId);
+    if (!pending) {
+      pending = { seq, count: 0, conn, timer: setTimeout(() => this.flushAck(seatId), 250) };
+    }
     pending.seq = seq;
     pending.count++;
     this.pendingAcks.set(seatId, pending);
@@ -568,14 +620,16 @@ export class Daemon extends EventEmitter {
     if (frame.t === "ok" && frame.seq) {
       const sent = this.db.outboxFrame(reqId) as { envelope: Envelope } | undefined;
       if (sent) {
-        const opened = this.openEnvelope(seat.lobby_id, sent.envelope);
-        const envelope = typeof opened === "string" ? sent.envelope : opened;
+        let envelope = sent.envelope;
+        const opened = this.openEnvelope(seat.lobby_id, envelope);
+        if (opened !== "locked" && opened !== "broken") envelope = opened;
         const own: LobbyEvent = { kind: "message", seq: frame.seq, committedAt: Date.now(), envelope };
         this.db.recordOwn(seat.seat_id, own);
         this.emitMessage(seat, own);
       }
     }
-    this.waiters.get(reqId)?.(frame);
+    const waiter = this.waiters.get(reqId);
+    if (waiter) waiter(frame);
     this.waiters.delete(reqId);
   }
 
@@ -589,7 +643,10 @@ export class Daemon extends EventEmitter {
     if (e.kind !== "message") throw new Error("only messages");
     const { envelope: env } = e;
     const handleOf = (agentId: string) => this.db.roster(view.seat_id).find((a) => a.agentId === agentId)?.handle ?? agentId;
-    const to = env.to.kind === "broadcast" ? "all" : env.to.kind === "topic" ? `#${env.to.topic}` : handleOf(env.to.agentId);
+    let to: string;
+    if (env.to.kind === "broadcast") to = "all";
+    else if (env.to.kind === "topic") to = `#${env.to.topic}`;
+    else to = handleOf(env.to.agentId);
     return {
       id: env.id, seq: e.seq, from: handleOf(env.from), to, type: env.type, body: env.body ?? null,
       inReplyTo: env.inReplyTo ?? null, committedAt: e.committedAt,
@@ -604,15 +661,19 @@ export class Daemon extends EventEmitter {
   private surface(seat: Seat, e: LobbyEvent): SurfacedMessage {
     if (e.kind !== "message") throw new Error("only messages are surfaced");
     const env = e.envelope;
-    const sender = this.db.roster(seat.seat_id).find((a) => a.agentId === env.from);
-    return {
-      id: env.id, seq: e.seq, from: sender?.handle ?? env.from, fromAgentId: env.from, type: env.type, to: env.to, body: env.body ?? "",
-      ...(sender ? { fromClient: sender.client } : {}),
-      ...(sender?.model ? { fromModel: sender.model } : {}),
-      ...(sender?.owner ? { fromOwner: sender.owner.login } : {}),
-      ...(env.inReplyTo ? { inReplyTo: env.inReplyTo } : {}),
-      ...(env.attachments ? { attachments: env.attachments } : {}),
+    const message: SurfacedMessage = {
+      id: env.id, seq: e.seq, from: env.from, fromAgentId: env.from, type: env.type, to: env.to, body: env.body ?? "",
     };
+    const sender = this.db.roster(seat.seat_id).find((a) => a.agentId === env.from);
+    if (sender) {
+      message.from = sender.handle;
+      message.fromClient = sender.client;
+      if (sender.model) message.fromModel = sender.model;
+      if (sender.owner) message.fromOwner = sender.owner.login;
+    }
+    if (env.inReplyTo) message.inReplyTo = env.inReplyTo;
+    if (env.attachments) message.attachments = env.attachments;
+    return message;
   }
 
   private addSeat(seatKey: string, s: { lobbyId: string; lobbyName: string | null; agentId: string; handle: string; role: Seat["role"]; token: string }, secretKey: Uint8Array): Seat {
@@ -644,10 +705,18 @@ export class Daemon extends EventEmitter {
         if (!WEB_METHODS.has(method)) throw new DaemonError("forbidden", `${method} can't be called from the web`);
         return this.call(method, params);
       },
-      onLobbiesChanged: () => void this.syncMemberships().catch(() => {}),
+      onLobbiesChanged: () => {
+        this.syncMemberships().catch(() => {
+          // The next change, or the next start, syncs again.
+        });
+      },
     });
     void this.userLink.start();
-    await this.syncMemberships().catch(() => {});
+    try {
+      await this.syncMemberships();
+    } catch {
+      // Offline or signed out on the relay; the next start or lobby change syncs again.
+    }
   }
 
   /** Machines that signed in before v0.4 make their encryption key now (LLD 15.2). */
@@ -673,7 +742,16 @@ export class Daemon extends EventEmitter {
    * time, so two syncs never add two seats for the same lobby.
    */
   private syncMemberships(): Promise<void> {
-    this.syncing = this.syncing.catch(() => {}).then(() => this.addMissingPersonSeats());
+    const previous = this.syncing;
+    const run = async () => {
+      try {
+        await previous;
+      } catch {
+        // The earlier sync's caller already got its error.
+      }
+      await this.addMissingPersonSeats();
+    };
+    this.syncing = run();
     return this.syncing;
   }
 
@@ -738,9 +816,8 @@ export class Daemon extends EventEmitter {
       for (const epoch of epochs) {
         const key = this.db.lobbyKey(lobbyId, epoch);
         if (!key) continue;
-        const list = byEpoch.get(epoch) ?? [];
-        list.push({ machineId, sealed: await sealLobbyKey(machine.boxPublicKey, lobbyId, epoch, key) });
-        byEpoch.set(epoch, list);
+        if (!byEpoch.has(epoch)) byEpoch.set(epoch, []);
+        byEpoch.get(epoch)!.push({ machineId, sealed: await sealLobbyKey(machine.boxPublicKey, lobbyId, epoch, key) });
       }
     }
     for (const [epoch, sealed] of byEpoch) conn.send({ t: "keys.put", reqId: ulid(), epoch, create: false, sealed });
@@ -774,11 +851,7 @@ export class Daemon extends EventEmitter {
       this.db.unlock(row.seat_id, row.seq, JSON.stringify({ ...event, envelope: opened }));
       seatsWithNew.add(row.seat_id);
     }
-    for (const seatId of seatsWithNew) {
-      const unread = this.db.unreadCount(seatId);
-      this.inboxWaiters.get(seatId)?.({ unread });
-      this.emit("notify", { method: "inbox.new", params: { seatId, unread } });
-    }
+    for (const seatId of seatsWithNew) this.wakeWaiter(seatId);
     if (seatsWithNew.size > 0) this.emit("activity", { type: "roster", lobbyId });
   }
 
@@ -828,15 +901,11 @@ export class Daemon extends EventEmitter {
   }
 
   private async relay<T>(path: string, body: unknown, token?: string, method = "POST"): Promise<T> {
-    const res = await fetch(this.opts.relayUrl + path, {
-      method,
-      headers: {
-        "content-type": "application/json",
-        "X-Agentlobbies-Client": CLIENT_VERSION,
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
+    const headers: Record<string, string> = { "content-type": "application/json", "X-Agentlobbies-Client": CLIENT_VERSION };
+    if (token) headers.authorization = `Bearer ${token}`;
+    const init: RequestInit = { method, headers };
+    if (body !== undefined) init.body = JSON.stringify(body);
+    const res = await fetch(this.opts.relayUrl + path, init);
     const json = (await res.json()) as T & { error?: { code: string; message: string } };
     if (!res.ok) throw new DaemonError(json.error?.code ?? "relay_error", json.error?.message ?? `relay returned ${res.status}`);
     return json;

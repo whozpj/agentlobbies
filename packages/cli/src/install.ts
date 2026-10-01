@@ -41,20 +41,35 @@ function writeText(path: string, text: string): void {
   renameSync(`${path}.agentlobbies.tmp`, path);
 }
 
-function addRules(text: string): string {
-  const without = text.replace(RULES_PATTERN, "");
-  if (without === "") return `${RULES}\n`;
-  return `${without.endsWith("\n") ? without : `${without}\n`}\n${RULES}\n`;
+/** Appends `block` after `text`, separated by one blank line. */
+function appendBlock(text: string, block: string): string {
+  if (text === "") return block;
+  const withNewline = text.endsWith("\n") ? text : `${text}\n`;
+  return `${withNewline}\n${block}`;
 }
 
+function addRules(text: string): string {
+  return appendBlock(text.replace(RULES_PATTERN, ""), `${RULES}\n`);
+}
+
+/** Removes our [mcp_servers.agentlobbies] table: from its header to the next other table, or the end. */
 function removeTomlTable(text: string): string {
   const lines = text.split("\n");
   const start = lines.findIndex((l) => l.trim() === TOML_HEADER);
   if (start < 0) return text;
+
   let end = start + 1;
-  while (end < lines.length && !(lines[end]!.startsWith("[") && !lines[end]!.startsWith("[mcp_servers.agentlobbies"))) end++;
+  while (end < lines.length) {
+    const line = lines[end]!;
+    const isAnotherTable = line.startsWith("[") && !line.startsWith("[mcp_servers.agentlobbies");
+    if (isAnotherTable) break;
+    end++;
+  }
+  // Keep the file's final newline, and take the blank line before our table with it.
   if (end === lines.length && lines[end - 1] === "") end--;
-  const from = start > 0 && lines[start - 1] === "" ? start - 1 : start;
+  let from = start;
+  if (start > 0 && lines[start - 1] === "") from = start - 1;
+
   lines.splice(from, end - from);
   return lines.join("\n");
 }
@@ -104,7 +119,10 @@ const claudeCode: ClientConfig = {
       const settingsPath = join(home, ".claude", "settings.json");
       const settings = JSON.parse(readText(settingsPath) || "{}");
       const hooks = withoutOurHooks(settings.hooks ?? {});
-      for (const [event, groups] of Object.entries(ourHooks(hookCommand))) hooks[event] = [...(hooks[event] ?? []), ...groups];
+      for (const [event, groups] of Object.entries(ourHooks(hookCommand))) {
+        const existing = hooks[event] ?? [];
+        hooks[event] = existing.concat(groups);
+      }
       settings.hooks = hooks;
       writeText(settingsPath, JSON.stringify(settings, null, 2));
     }
@@ -136,8 +154,7 @@ const codex: ClientConfig = {
   isInstalled: (home) => readText(join(home, ".codex", "config.toml")).split("\n").some((l) => l.trim() === TOML_HEADER),
   install(home, cmd) {
     const path = join(home, ".codex", "config.toml");
-    const text = removeTomlTable(readText(path));
-    writeText(path, text === "" ? tomlTable(cmd) : `${text.endsWith("\n") ? text : `${text}\n`}\n${tomlTable(cmd)}`);
+    writeText(path, appendBlock(removeTomlTable(readText(path)), tomlTable(cmd)));
     const rules = join(home, ".codex", "AGENTS.md");
     writeText(rules, addRules(readText(rules)));
   },
@@ -159,10 +176,12 @@ export function detectClients(home: string): ClientConfig[] {
 const viaNpx = () => process.argv[1]?.includes(`${sep}_npx${sep}`) ?? false;
 
 export function mcpCommand(): McpCommand {
-  return viaNpx() ? { command: "npx", args: ["-y", "agentlobbies", "mcp"] } : { command: "agentlobbies", args: ["mcp"] };
+  if (viaNpx()) return { command: "npx", args: ["-y", "agentlobbies", "mcp"] };
+  return { command: "agentlobbies", args: ["mcp"] };
 }
 
 /** Hooks run on every tool call, so they need the installed binary; npx would add seconds each time. */
 export function hookCommand(): string | undefined {
-  return viaNpx() ? undefined : "agentlobbies-hook";
+  if (viaNpx()) return undefined;
+  return "agentlobbies-hook";
 }

@@ -11,5 +11,8 @@ const SECRET_PATTERNS: [kind: string, pattern: RegExp][] = [
 
 /** The kind of the first secret found in `text`, if any. */
 export function findSecret(text: string): string | undefined {
-  return SECRET_PATTERNS.find(([, pattern]) => pattern.test(text))?.[0];
+  for (const [kind, pattern] of SECRET_PATTERNS) {
+    if (pattern.test(text)) return kind;
+  }
+  return undefined;
 }

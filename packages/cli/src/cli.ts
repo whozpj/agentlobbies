@@ -11,12 +11,12 @@ import { githubDeviceLogin } from "./login";
 type Call = (method: string, params?: Record<string, unknown>) => Promise<any>;
 
 // Exit codes from LLD 9.2.
-const EXIT_CODES: Record<string, number> = { rate_limited: 3, invalid_code: 4, lobby_full: 5, forbidden: 6 };
+const EXIT_CODES: Record<string, number> = { rate_limited: 3, invalid_invite: 4, lobby_full: 5, forbidden: 6 };
 
 const MESSAGES: Record<string, string> = {
   login_required: "Sign in first: run `agentlobbies login`.",
   no_seat: "You aren't in a lobby yet. Run `agentlobbies create`, or `agentlobbies accept <invite link>`.",
-  invalid_code: "That invite is invalid or expired. Ask the lobby owner for a new one.",
+  invalid_invite: "That invite is invalid or expired. Ask the lobby owner for a new one.",
   forbidden: "Only the lobby owner can do that.",
 };
 
@@ -35,8 +35,12 @@ async function withLobby(fn: (call: Call) => Promise<void>): Promise<void> {
 }
 
 function openInBrowser(url: string): void {
-  const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
-  spawn(opener, [url], { detached: true, stdio: "ignore" }).on("error", () => {}).unref();
+  let opener = "xdg-open";
+  if (process.platform === "darwin") opener = "open";
+  if (process.platform === "win32") opener = "explorer";
+  const child = spawn(opener, [url], { detached: true, stdio: "ignore" });
+  child.on("error", () => {}); // no browser to open; the URL is printed anyway
+  child.unref();
 }
 
 async function signIn(call: Call, openBrowser: boolean): Promise<void> {
@@ -154,7 +158,10 @@ const install = defineCommand({
     }
     await withLobby(async (call) => {
       if (await call("account.status")) return;
-      if (!process.stdin.isTTY) return console.log(`\nNext, sign in: ${pc.bold("agentlobbies login")}`);
+      if (!process.stdin.isTTY) {
+        console.log(`\nNext, sign in: ${pc.bold("agentlobbies login")}`);
+        return;
+      }
       console.log("\nSign in with GitHub so your agents show as yours:");
       await signIn(call, true);
     });
@@ -177,8 +184,12 @@ const doctor = defineCommand({
   run: async () => {
     let failed = false;
     const check = (ok: boolean, pass: string, fail: string) => {
-      console.log(ok ? `${pc.green("✓")} ${pass}` : `${pc.red("✗")} ${fail}`);
-      failed ||= !ok;
+      if (ok) {
+        console.log(`${pc.green("✓")} ${pass}`);
+      } else {
+        console.log(`${pc.red("✗")} ${fail}`);
+        failed = true;
+      }
     };
 
     const [major = 0, minor = 0] = process.versions.node.split(".").map(Number);
@@ -187,21 +198,22 @@ const doctor = defineCommand({
     try {
       const session = await openSession({ client: "cli", cwd: process.cwd() });
       const info = await session.call("daemon.info");
+      const account = await session.call("account.status");
       session.close();
       check(true, `Daemon running (pid ${info.pid})`, "");
+      check(Boolean(account), `Signed in as @${account?.login}`, "Not signed in; run `agentlobbies login`");
     } catch (e) {
       check(false, "", `Daemon not running: ${(e as Error).message}`);
     }
 
-    try {
-      const session = await openSession({ client: "cli", cwd: process.cwd() });
-      const account = await session.call("account.status");
-      session.close();
-      check(Boolean(account), `Signed in as @${account?.login}`, "Not signed in; run `agentlobbies login`");
-    } catch {}
-
     const url = relayUrl();
-    const healthy = await fetch(`${url}/v1/health`, { signal: AbortSignal.timeout(5000) }).then((r) => r.ok, () => false);
+    let healthy = false;
+    try {
+      const res = await fetch(`${url}/v1/health`, { signal: AbortSignal.timeout(5000) });
+      healthy = res.ok;
+    } catch {
+      healthy = false;
+    }
     check(healthy, `Relay reachable at ${url}`, `Relay not reachable at ${url}; check your network or AGENTLOBBIES_RELAY_URL`);
 
     for (const client of detectClients(homedir())) {

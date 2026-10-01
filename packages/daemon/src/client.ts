@@ -13,9 +13,15 @@ export { CLIENT_VERSION } from "./version";
 function isOlder(version: string, than: string): boolean {
   const a = version.split(".").map(Number);
   const b = than.split(".").map(Number);
-  for (let i = 0; i < 3; i++) if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) < (b[i] ?? 0);
+  for (let i = 0; i < 3; i++) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    if (x !== y) return x < y;
+  }
   return false;
 }
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Connects to this user's daemon, starting it in the background if it isn't running. A daemon
@@ -23,14 +29,32 @@ function isOlder(version: string, than: string): boolean {
  */
 export async function connectToDaemon(home = defaultHome()): Promise<RpcClient> {
   const path = socketPath(home);
-  const existing = await RpcClient.connect(path).catch(() => undefined);
+  let existing: RpcClient | undefined;
+  try {
+    existing = await RpcClient.connect(path);
+  } catch {
+    existing = undefined; // not running yet
+  }
+
   if (existing) {
-    const info = await existing.call<{ version: string }>("daemon.info").catch(() => undefined);
-    if (!info || !isOlder(info.version, CLIENT_VERSION)) return existing;
-    await existing.call("daemon.shutdown").catch(() => {});
+    let version: string | undefined;
+    try {
+      version = (await existing.call<{ version: string }>("daemon.info")).version;
+    } catch {
+      version = undefined;
+    }
+    if (!version || !isOlder(version, CLIENT_VERSION)) return existing;
+
+    // An older daemon from before an upgrade: ask it to exit, and wait until it has.
+    try {
+      await existing.call("daemon.shutdown");
+    } catch {
+      // It may exit before it answers.
+    }
     existing.close();
-    for (let i = 0; i < 30 && (await RpcClient.connect(path).then((c) => (c.close(), true), () => false)); i++) {
-      await new Promise((r) => setTimeout(r, 100));
+    for (let i = 0; i < 30; i++) {
+      if (!(await RpcClient.isListening(path))) break;
+      await sleep(100);
     }
   }
 
@@ -41,10 +65,12 @@ export async function connectToDaemon(home = defaultHome()): Promise<RpcClient> 
     env: { ...process.env, AGENTLOBBIES_HOME: home },
   }).unref();
   for (let i = 0; i < 30; i++) {
-    await new Promise((r) => setTimeout(r, 100));
+    await sleep(100);
     try {
       return await RpcClient.connect(path);
-    } catch {}
+    } catch {
+      // Still starting.
+    }
   }
   throw new Error("could not start the agentlobbies daemon");
 }

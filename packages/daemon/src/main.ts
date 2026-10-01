@@ -14,8 +14,7 @@ const path = socketPath(home);
 
 // Another daemon already answers on the socket: leave it running.
 if (existsSync(path)) {
-  const alreadyRunning = await RpcClient.connect(path).then((c) => (c.close(), true), () => false);
-  if (alreadyRunning) process.exit(0);
+  if (await RpcClient.isListening(path)) process.exit(0);
   unlinkSync(path); // stale socket from a crashed daemon
 }
 
@@ -28,7 +27,11 @@ const sessionsByConn = new Map<Socket, string[]>();
 const server = new RpcServer(
   async (method, params, conn) => {
     const result = await daemon.call(method, params);
-    if (method === "session.open") sessionsByConn.set(conn, [...(sessionsByConn.get(conn) ?? []), result.sessionId]);
+    if (method === "session.open") {
+      const sessions = sessionsByConn.get(conn) ?? [];
+      sessions.push(result.sessionId);
+      sessionsByConn.set(conn, sessions);
+    }
     return result;
   },
   (conn) => {

@@ -26,7 +26,9 @@ export function commit(storage: DurableObjectStorage, body: EventBody, cols: Col
   return storage.transactionSync(() => {
     const seq = headSeq(storage) + 1;
     const event = { ...body, seq, committedAt: now } as LobbyEvent;
-    const target = cols.to?.kind === "direct" ? cols.to.agentId : cols.to?.kind === "topic" ? cols.to.topic : null;
+    let target: string | null = null;
+    if (cols.to?.kind === "direct") target = cols.to.agentId;
+    if (cols.to?.kind === "topic") target = cols.to.topic;
     storage.sql.exec(
       `INSERT INTO events (seq, id, kind, from_agent, to_kind, to_target, thread_depth, committed_at, event_json)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,

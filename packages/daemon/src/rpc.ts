@@ -18,11 +18,12 @@ function readLines(socket: Socket, onLine: (line: string) => void): void {
   socket.setEncoding("utf8");
   socket.on("data", (chunk: string) => {
     buffer += chunk;
-    let newline: number;
-    while ((newline = buffer.indexOf("\n")) >= 0) {
+    let newline = buffer.indexOf("\n");
+    while (newline >= 0) {
       const line = buffer.slice(0, newline);
       buffer = buffer.slice(newline + 1);
       if (line.trim()) onLine(line);
+      newline = buffer.indexOf("\n");
     }
   });
 }
@@ -98,7 +99,8 @@ export class RpcClient {
     readLines(socket, (line) => {
       const msg = JSON.parse(line);
       if (msg.id === undefined || msg.id === null) {
-        if (msg.method) this.notificationHandlers.forEach((h) => h({ method: msg.method, params: msg.params }));
+        if (!msg.method) return;
+        for (const handler of this.notificationHandlers) handler({ method: msg.method, params: msg.params });
         return;
       }
       const call = this.pending.get(msg.id);
@@ -112,6 +114,17 @@ export class RpcClient {
       for (const call of this.pending.values()) call.reject(new DaemonError("daemon_unavailable", "daemon connection closed"));
       this.pending.clear();
     });
+  }
+
+  /** True if a daemon is answering on `path` right now. */
+  static async isListening(path: string): Promise<boolean> {
+    try {
+      const client = await RpcClient.connect(path);
+      client.close();
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   static connect(path: string): Promise<RpcClient> {

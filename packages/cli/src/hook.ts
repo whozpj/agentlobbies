@@ -14,7 +14,7 @@ async function readInput(): Promise<{ cwd: string; tool_name?: string }> {
 
 type Call = <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>;
 
-/** Waits for unread messages. While a join is still waiting for approval, keeps checking for the seat. */
+/** Waits for unread messages. Until the user adds this agent to a lobby, keeps checking for its seat. */
 async function waitForMessages(call: Call): Promise<number> {
   const deadline = Date.now() + WAIT_MS;
   while (Date.now() < deadline) {
@@ -33,8 +33,12 @@ async function waitForMessages(call: Call): Promise<number> {
 async function main(): Promise<number> {
   const event = process.argv[2];
   const input = await readInput();
-  const daemon = await RpcClient.connect(socketPath(defaultHome())).catch(() => undefined);
-  if (!daemon) return 0;
+  let daemon: RpcClient;
+  try {
+    daemon = await RpcClient.connect(socketPath(defaultHome()));
+  } catch {
+    return 0; // no daemon running, so this agent isn't in a lobby
+  }
 
   try {
     const { sessionId } = await daemon.call("session.open", { client: "claude-code", cwd: input.cwd });

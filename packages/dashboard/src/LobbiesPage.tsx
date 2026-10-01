@@ -7,7 +7,15 @@ const ROLE_LABEL: Record<string, string> = { host: "Owner", member: "Member", ob
 function PromptModal(props: { title: string; label: string; placeholder: string; action: string; onSubmit: (value: string) => Promise<unknown>; onClose: () => void }) {
   const [value, setValue] = useState("");
   const [error, setError] = useState("");
-  const submit = () => value.trim() && props.onSubmit(value.trim()).then(props.onClose, (e: Error) => setError(e.message));
+  const submit = async () => {
+    if (!value.trim()) return;
+    try {
+      await props.onSubmit(value.trim());
+      props.onClose();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
   return (
     <Modal
       title={props.title}

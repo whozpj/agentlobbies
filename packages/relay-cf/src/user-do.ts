@@ -85,7 +85,10 @@ export class UserDurableObject extends DurableObject<Env> {
         JSON.stringify(message.agents), Date.now(), att.machineId);
       this.pushMachines();
     } else {
-      this.pending.get(message.id)?.(message.error ? { error: message.error } : { result: message.result });
+      const waiting = this.pending.get(message.id);
+      if (!waiting) return;
+      if (message.error) waiting({ error: message.error });
+      else waiting({ result: message.result });
     }
   }
 

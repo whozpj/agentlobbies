@@ -28,11 +28,16 @@ export function InvitePage({ invite, me }: { invite: string; me: Me | null }) {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    api.invitePreview(invite).then(setPreview, () => setPreview(null));
+    api.invitePreview(invite).then(setPreview, () => setPreview(null)); // null: invalid or expired
   }, [invite]);
 
-  const join = () => {
-    api.acceptInvite(invite).then((r) => location.assign(`/#/lobbies/${r.lobbyId}`), (e: Error) => setError(e.message));
+  const join = async () => {
+    try {
+      const { lobbyId } = await api.acceptInvite(invite);
+      location.assign(`/#/lobbies/${lobbyId}`);
+    } catch (e) {
+      setError((e as Error).message);
+    }
   };
 
   let content;

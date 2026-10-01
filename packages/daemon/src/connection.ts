@@ -46,7 +46,14 @@ export class Connection {
     } catch {
       return this.retryLater();
     }
-    const accountToken = await this.opts.accountToken?.().catch(() => undefined);
+    let accountToken: string | undefined;
+    if (this.opts.accountToken) {
+      try {
+        accountToken = await this.opts.accountToken();
+      } catch {
+        accountToken = undefined; // connect anyway; this seat just won't receive lobby keys
+      }
+    }
     if (this.state === "stopped") return;
     const protocols = ["agentlobbies.v1", `bearer.${token}`];
     if (accountToken) protocols.push(`account.${accountToken}`);

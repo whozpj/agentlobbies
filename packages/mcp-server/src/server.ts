@@ -15,7 +15,7 @@ const INSTRUCTIONS =
 const ERROR_TEXT: Record<string, string> = {
   no_seat: "You are not in a lobby yet. Your user can add you from the dashboard (`agentlobbies dashboard`); you'll be told when they do.",
   login_required: "Your user isn't signed in. Ask them to run `agentlobbies login`, then try again.",
-  invalid_code: "That lobby code is invalid or expired. Ask the user for a new one.",
+  waiting_for_key: "This lobby's encryption key hasn't reached this machine yet. It arrives when another member's machine is online; try again shortly.",
   thread_too_deep: "This thread is too long. Stop replying and summarize for your user.",
   kicked: "You are no longer in this lobby.",
   lobby_closed: "You are no longer in this lobby.",
@@ -30,6 +30,23 @@ function errorText(e: unknown): string {
 }
 
 const text = (t: string): CallToolResult => ({ content: [{ type: "text", text: t }] });
+
+interface Player {
+  handle: string;
+  client: string;
+  owns: string[];
+  status: string;
+  workingOn: string;
+  owner?: { login: string };
+}
+
+/** "api-codex (codex) · @sam active; owns: api; working on: the ETA endpoint" */
+function describePlayer(p: Player): string {
+  let line = `${p.handle} (${p.client})`;
+  if (p.owner) line += ` · @${p.owner.login}`;
+  line += ` ${p.status}; owns: ${p.owns.join(", ") || "-"}; working on: ${p.workingOn || "-"}`;
+  return line;
+}
 
 const Attachments = z
   .array(z.object({ kind: z.enum(["diff", "file_snippet", "schema", "text"]), name: z.string().max(200), content: z.string() }))
@@ -48,10 +65,14 @@ export function createServer(call: DaemonCall): McpServer {
       result = { ...text(errorText(e)), isError: true };
     }
     if (deliver) {
-      const pending: SurfacedMessage[] = await call("inbox.pull", { limit: 5 }).catch(() => []);
-      if (pending.length > 0) {
-        const { unread } = await call("inbox.peek").catch(() => ({ unread: 0 }));
-        result.content.push({ type: "text", text: renderPending(pending, unread) });
+      try {
+        const pending: SurfacedMessage[] = await call("inbox.pull", { limit: 5 });
+        if (pending.length > 0) {
+          const { unread } = await call("inbox.peek");
+          result.content.push({ type: "text", text: renderPending(pending, unread) });
+        }
+      } catch {
+        // No new messages to add (not in a lobby yet, or the daemon is restarting).
       }
     }
     return result;
@@ -69,11 +90,9 @@ export function createServer(call: DaemonCall): McpServer {
     description: "List the agents in your lobby: handle, client, what they own, and what they are working on. Use it to decide who to ask.",
     inputSchema: {},
   }, () => withNewMessages(async () => {
-    const players: { handle: string; client: string; owns: string[]; status: string; workingOn: string; owner?: { login: string } }[] =
-      await call("lobby.players");
-    const lines = players.map((p) =>
-      `${p.handle} (${p.client})${p.owner ? ` · @${p.owner.login}` : ""} ${p.status}; owns: ${p.owns.join(", ") || "-"}; working on: ${p.workingOn || "-"}`);
-    return text(lines.join("\n") || "No other agents yet.");
+    const players: Player[] = await call("lobby.players");
+    if (players.length === 0) return text("No other agents yet.");
+    return text(players.map(describePlayer).join("\n"));
   }));
 
   server.registerTool("lobby_ask", {

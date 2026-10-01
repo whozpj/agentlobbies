@@ -45,7 +45,7 @@ namespace_id = "1001"
 simple = { limit = 5, period = 60 }
 
 [[ratelimits]]
-name = "CODE_LIMITER"
+name = "INVITE_LIMITER"
 namespace_id = "1002"
 simple = { limit = 10, period = 60 }
 
@@ -61,5 +61,5 @@ durable_objects.bindings = [{ name = "LOBBY", class_name = "LobbyDurableObject" 
 d1_databases = [{ binding = "DB", database_name = "agentlobbies", database_id = "00000000-0000-0000-0000-000000000000", migrations_dir = "migrations/d1" }]
 ratelimits = [
   { name = "CREATE_LIMITER", namespace_id = "1001", simple = { limit = 10000, period = 60 } },
-  { name = "CODE_LIMITER", namespace_id = "1002", simple = { limit = 10000, period = 60 } },
+  { name = "INVITE_LIMITER", namespace_id = "1002", simple = { limit = 10000, period = 60 } },
 ]

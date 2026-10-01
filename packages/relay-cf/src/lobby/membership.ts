@@ -1,4 +1,4 @@
-import { LIMITS, LobbySettings, type AgentProfile, type JoinProfile, type LobbyEvent, type Role } from "@agentlobbies/protocol";
+import { LIMITS, LobbySettings, type AgentProfile, type JoinProfile, type LobbyEvent, type Role, type SystemEvent } from "@agentlobbies/protocol";
 import { commit } from "./events";
 import { isOpen, setMeta } from "./meta";
 import { migrate } from "./schema";
@@ -40,13 +40,14 @@ export function roleOf(sql: SqlStorage, agentId: string): Role | undefined {
 }
 
 function toProfile(row: AgentRow): AgentProfile {
-  return {
+  const profile: AgentProfile = {
     agentId: row.agent_id, handle: row.handle, client: row.client as AgentProfile["client"],
-    ...(row.model ? { model: row.model } : {}),
     owns: JSON.parse(row.owns), workingOn: row.working_on, status: row.status as AgentProfile["status"],
     role: row.role as Role, publicKey: row.public_key, joinedAt: row.joined_at, lastSeenAt: row.last_seen_at,
-    ...(row.owner_login ? { owner: { login: row.owner_login, avatarUrl: row.owner_avatar ?? "" } } : {}),
   };
+  if (row.model) profile.model = row.model;
+  if (row.owner_login) profile.owner = { login: row.owner_login, avatarUrl: row.owner_avatar ?? "" };
+  return profile;
 }
 
 export function roster(storage: DurableObjectStorage): AgentProfile[] {
@@ -82,7 +83,9 @@ export function initLobby(
     setMeta(storage.sql, "created_at", args.now);
     setMeta(storage.sql, "min_retained_seq", 1);
     setMeta(storage.sql, "settings", JSON.stringify(LobbySettings.parse(args.settings)));
-    commit(storage, { kind: "system", system: { type: "lobby_created", ...(args.host ? { hostId: args.host.agentId } : {}) } }, {}, args.now);
+    const created: Extract<SystemEvent, { type: "lobby_created" }> = { type: "lobby_created" };
+    if (args.host) created.hostId = args.host.agentId;
+    commit(storage, { kind: "system", system: created }, {}, args.now);
     if (args.host) insertAgent(storage, args.host, args.host.handle, "host", args.now);
   });
 }
@@ -105,12 +108,11 @@ function freeHandle(sql: SqlStorage, wanted: string): string | undefined {
   return undefined;
 }
 
-/** Marks an agent as removed, drops its subscriptions and held messages, and records a `left` event. */
+/** Marks an agent as removed, drops its subscriptions, and records a `left` event. */
 export function removeFromLobby(storage: DurableObjectStorage, agentId: string, now: number): LobbyEvent {
   return storage.transactionSync(() => {
     storage.sql.exec("UPDATE agents SET kicked_at = ?, status = 'offline' WHERE agent_id = ?", now, agentId);
     storage.sql.exec("DELETE FROM subscriptions WHERE agent_id = ?", agentId);
-    storage.sql.exec("DELETE FROM held WHERE from_agent = ?", agentId);
     return commit(storage, { kind: "system", system: { type: "left", agentId, reason: "kicked" } }, {}, now);
   });
 }

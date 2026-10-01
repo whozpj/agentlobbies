@@ -63,6 +63,6 @@ describe("end-to-end encryption between machines", () => {
     const rotated = await eventually(() => alice.person("lobby.status", { lobbyId }), (s) => s.keyEpoch === 2);
     expect(rotated.keyEpoch).toBe(2);
     await alice.person("message.send", { lobbyId, to: "all", type: "update", body: "bob can't read this" });
-    expect(await bob.daemon.call("dashboard.lobbies")).toEqual([]);
+    expect(await bob.daemon.call("dashboard.lobbies", {})).toEqual([]);
   });
 });

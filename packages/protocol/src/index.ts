@@ -1,6 +1,5 @@
 export * from "./b64u.js";
 export * from "./canonical.js";
-export * from "./codes.js";
 export * from "./constants.js";
 export * from "./errors.js";
 export * from "./frames.js";
