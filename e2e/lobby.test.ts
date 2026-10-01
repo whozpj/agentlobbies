@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -9,6 +9,11 @@ afterAll(async () => {
 });
 
 describe("installed from the npm tarball", () => {
+  it("reports the version it was published as", async () => {
+    const { version } = JSON.parse(readFileSync(new URL("../packages/cli/package.json", import.meta.url), "utf8")) as { version: string };
+    expect((await new Machine().cli(tmpdir(), "--version")).trim()).toBe(version);
+  });
+
   it("prints help with every command", async () => {
     const help = await new Machine().cli(tmpdir(), "--help");
     for (const cmd of ["install", "login", "create", "invite", "accept", "dashboard", "doctor", "mcp"]) expect(help).toContain(cmd);

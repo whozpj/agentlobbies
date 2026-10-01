@@ -102,7 +102,10 @@ function serveStatic(res: ServerResponse, staticDir: string | undefined, pathnam
   const requested = resolve(root, `.${decodeURIComponent(pathname)}`);
   const inside = requested.startsWith(root + sep);
   const file = inside && existsSync(requested) && statSync(requested).isFile() ? requested : join(root, "index.html");
-  res.writeHead(200, { "content-type": CONTENT_TYPES[extname(file)] ?? "application/octet-stream" });
+  const headers: Record<string, string> = { "content-type": CONTENT_TYPES[extname(file)] ?? "application/octet-stream" };
+  // index.html names this version's asset files, so browsers must re-check it after an upgrade.
+  if (file.endsWith("index.html")) headers["cache-control"] = "no-cache";
+  res.writeHead(200, headers);
   createReadStream(file).pipe(res);
 }
 

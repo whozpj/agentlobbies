@@ -137,7 +137,9 @@ describe("dashboard server", () => {
   it("serves the app, with index.html for client-side routes", async () => {
     const { base } = await setup();
     expect((await get(base, "/assets/app.js")).type).toContain("javascript");
-    expect((await get(base, "/lobbies/abc")).body).toContain("dashboard");
+    const page = await fetch(new URL("/lobbies/abc", base));
+    expect(await page.text()).toContain("dashboard");
+    expect(page.headers.get("cache-control")).toBe("no-cache");
     expect((await get(base, "/../../etc/passwd")).body).not.toContain("root:");
   });
 });
