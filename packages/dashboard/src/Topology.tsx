@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import type { Agent, Message } from "./api";
 
-const HEIGHT = 560;
+const HEIGHT = 420;
 
 /** Drawing width: half as wide on a phone, so nodes and labels keep a readable size. */
 function drawingWidth(): number {
-  return window.innerWidth < 600 ? 500 : 1000;
+  return window.innerWidth < 600 ? 500 : 900;
 }
 const TYPE_COLORS: Record<Message["type"], string> = { question: "var(--question)", answer: "var(--answer)", update: "var(--update)" };
 
@@ -26,7 +26,7 @@ function layout(agents: Agent[], hub: Point): Map<string, Point> {
   const positions = new Map<string, Point>();
   agents.forEach((agent, i) => {
     const angle = Math.PI + (2 * Math.PI * i) / agents.length;
-    positions.set(agent.handle, { x: hub.x + hub.x * 0.76 * Math.cos(angle), y: hub.y + 200 * Math.sin(angle) });
+    positions.set(agent.handle, { x: hub.x + hub.x * 0.7 * Math.cos(angle), y: hub.y + 140 * Math.sin(angle) });
   });
   return positions;
 }
