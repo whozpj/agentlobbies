@@ -79,6 +79,7 @@ async function handleApi(source: DashboardSource, req: IncomingMessage, res: Ser
   if (lobby && route === `POST /api/lobbies/${lobby}/invites`) return reply("invite.create", { ...(await body()), lobbyId: lobby });
   if (lobby && route === `POST /api/lobbies/${lobby}/agents`) return reply("lobby.addAgent", { ...(await body()), lobbyId: lobby });
   if (lobby && agentId && req.method === "DELETE") return reply("lobby.removeAgent", { lobbyId: lobby, agentId });
+  if (lobby && agentId && req.method === "PATCH") return reply("lobby.updateAgent", { ...(await body()), lobbyId: lobby, agentId });
   if (lobby && login && req.method === "DELETE") return reply("lobby.removeMember", { lobbyId: lobby, login });
   send(res, 404, { error: "not found" });
 }

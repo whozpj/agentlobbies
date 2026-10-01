@@ -95,3 +95,29 @@ describe("invites", () => {
 });
 
 
+
+describe("editing your agents", () => {
+  it("accepts areas as typed, and tells the agent when it is renamed or given new areas", async () => {
+    const daemon = await startDaemon();
+    const web = await agentSession(daemon, "claude-code", "web");
+    const { lobbyId } = await daemon.call("lobby.create", { name: "edits" });
+    const { agentId, handle } = await daemon.call("lobby.addAgent", { lobbyId, seatKey: web.seatKey, owns: ["Frontend"] });
+    expect(handle).toBe("web-claude");
+    await web.call("inbox.pull", { limit: 5 }); // the "you were added" notice
+    const players = await until(() => web.call("lobby.players"), (p: { handle: string }[]) => p.some((a) => a.handle === "web-claude"));
+    expect(players.find((a: { handle: string }) => a.handle === "web-claude").owns).toEqual(["frontend"]);
+
+    await daemon.call("lobby.updateAgent", { lobbyId, agentId, handle: "Web UI", owns: ["frontend", "Design System"] });
+    const [notice] = await until(() => web.call("inbox.pull", { limit: 5 }), (m: unknown[]) => m.length > 0);
+    expect(notice.body).toBe("Your user updated you in lobby edits: you are now web-ui; you now own: frontend, design-system.");
+    expect(await web.call("lobby.status")).toMatchObject({ handle: "web-ui" });
+  });
+
+  it("says which area can't be used", async () => {
+    const daemon = await startDaemon();
+    const web = await agentSession(daemon, "claude-code", "web");
+    const { lobbyId } = await daemon.call("lobby.create", { name: "bad-area" });
+    await expect(daemon.call("lobby.addAgent", { lobbyId, seatKey: web.seatKey, owns: ["front/end"] }))
+      .rejects.toThrow(/"front\/end" isn't a valid area/);
+  });
+});

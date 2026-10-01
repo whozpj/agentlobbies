@@ -240,3 +240,32 @@ describe("layout", () => {
     }
   });
 });
+
+describe("editing an agent", () => {
+  it("renames an agent and changes its areas from the browser, and the agent is told", async () => {
+    const laptop = new Machine();
+    await laptop.login("editor");
+    const lobbyId = await laptop.createLobby("renames");
+    const webDir = join(mkdtempSync(join(tmpdir(), "proj-")), "web");
+    mkdirSync(webDir);
+    const web = await laptop.agent("claude-code", webDir);
+    await web.tool("lobby_status");
+    await laptop.addAgent(lobbyId, web, "web-claude", ["Frontend"]);
+    await web.until("lobby_status", "You were added");
+
+    const page = await signedIn(laptop);
+    await page.getByRole("link", { name: "renames" }).click();
+    await pwExpect(page.locator(".agent-card").filter({ hasText: "web-claude" }).getByText("frontend")).toBeVisible();
+
+    await page.getByRole("button", { name: "Edit web-claude" }).click();
+    await page.getByRole("dialog").getByLabel("Name").fill("Web UI");
+    await page.getByRole("dialog").getByLabel("Owns").fill("frontend, Design System");
+    await page.getByRole("dialog").getByRole("button", { name: "Save" }).click();
+
+    const card = page.locator(".agent-card").filter({ hasText: "web-ui" });
+    await pwExpect(card).toBeVisible();
+    await pwExpect(card.getByText("design-system")).toBeVisible();
+    await pwExpect(page.getByTestId("node-web-ui")).toBeVisible();
+    expect(await web.until("lobby_status", "you are now web-ui")).toContain("you now own: frontend, design-system");
+  });
+});

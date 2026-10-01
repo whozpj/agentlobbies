@@ -1,11 +1,36 @@
 import { z } from "zod";
 import { LIMITS } from "./constants.js";
+import { ProtocolError } from "./errors.js";
 
 export const Ulid = z.string().regex(/^[0-9A-HJKMNP-TV-Z]{26}$/);
 export const LobbyId = z.string().regex(/^[0-9a-f]{64}$/);
 export const Handle = z.string().regex(/^[a-z0-9][a-z0-9-]{1,31}$/);
 export const Topic = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/);
 export const BoardKey = Topic;
+
+/** "Mobile App " becomes "mobile-app": names and areas as people type them, in the form above. */
+export function toSlug(text: string): string {
+  return text.trim().toLowerCase().replace(/\s+/g, "-");
+}
+
+/** A typed agent name as a handle. Throws bad_request if it can't be one. */
+export function toHandle(typed: string): string {
+  const handle = toSlug(typed);
+  if (!Handle.safeParse(handle).success) throw new ProtocolError("bad_request", "a name uses 2 to 32 lowercase letters, digits, or hyphens");
+  return handle;
+}
+
+/** Typed areas as topics, skipping blanks. Throws bad_request naming the first one that can't be an area. */
+export function toAreas(typed: string[]): string[] {
+  const areas: string[] = [];
+  for (const text of typed) {
+    const area = toSlug(text);
+    if (area === "") continue;
+    if (!Topic.safeParse(area).success) throw new ProtocolError("bad_request", `"${text}" isn't a valid area: use letters, digits, '.', '_', or '-'`);
+    areas.push(area);
+  }
+  return areas;
+}
 export const B64u = z.string().regex(/^[A-Za-z0-9_-]+$/);
 export const Ms = z.number().int().nonnegative();
 export const Seq = z.number().int().positive();

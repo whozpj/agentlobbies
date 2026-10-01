@@ -117,6 +117,23 @@ export function removeFromLobby(storage: DurableObjectStorage, agentId: string, 
   });
 }
 
+/** Renames an agent or changes the areas it owns. A name another agent has is refused. */
+export function updateProfile(
+  storage: DurableObjectStorage, agentId: string, changes: { handle?: string; owns?: string[] },
+): { profile: AgentProfile } | { error: "handle_taken" } {
+  const { sql } = storage;
+  if (changes.handle !== undefined) {
+    const taken = sql.exec("SELECT 1 FROM agents WHERE handle = ? AND agent_id != ? AND left_at IS NULL AND kicked_at IS NULL",
+      changes.handle, agentId).toArray().length > 0;
+    if (taken) return { error: "handle_taken" };
+    sql.exec("UPDATE agents SET handle = ? WHERE agent_id = ?", changes.handle, agentId);
+  }
+  if (changes.owns !== undefined) {
+    sql.exec("UPDATE agents SET owns = ? WHERE agent_id = ?", JSON.stringify(changes.owns), agentId);
+  }
+  return { profile: toProfile(getAgent(sql, agentId)!) };
+}
+
 export type AdmitResult =
   | { handle: string; profile: AgentProfile; joined: LobbyEvent }
   | { error: "lobby_closed" | "lobby_full" | "handle_taken" };

@@ -1,5 +1,5 @@
 import {
-  B64u, JoinProfile, ProtocolError, RATES, TIMINGS, fromB64u, httpStatusOf, refreshSigningBytes, toB64u, verifyBytes, webCrypto,
+  B64u, JoinProfile, LIMITS, ProtocolError, RATES, TIMINGS, fromB64u, httpStatusOf, refreshSigningBytes, toAreas, toB64u, toHandle, verifyBytes, webCrypto,
   type ErrorCode, type Owner, type Role,
 } from "@agentlobbies/protocol";
 import { ulid } from "ulid";
@@ -19,6 +19,7 @@ const AddAgentBody = z.union([
   z.object({ machineId: z.string(), seatKey: z.string(), owns: z.array(z.string()).max(16).default([]) }),
 ]);
 const AcceptInviteBody = z.object({ token: z.string().min(20).max(64) });
+const UpdateAgentBody = z.object({ handle: z.string().optional(), owns: z.array(z.string()).max(LIMITS.maxOwns).optional() });
 const InviteBody = z.object({
   role: z.enum(["member", "viewer"]).default("member"),
   ttlMs: z.number().int().positive().max(30 * 24 * 60 * 60_000).default(7 * 24 * 60 * 60_000),
@@ -61,6 +62,7 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
   ["POST", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/invites" }), createInvite],
   ["POST", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/people" }), addPerson],
   ["POST", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/agents" }), addAgent],
+  ["PATCH", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/agents/:agentId" }), updateAgent],
   ["DELETE", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/agents/:agentId" }), removeAgent],
   ["DELETE", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/members/:login" }), removeMember],
   ["GET", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/events" }), listEvents],
@@ -298,6 +300,24 @@ async function addAgent(req: Request, env: Env, params: Params): Promise<Respons
     return Response.json({ error: call.error }, { status });
   }
   return Response.json(call.result, { status: 201 });
+}
+
+/** Renames an agent or changes what it owns; the agent hears about it through the roster (LLD 15.6). */
+async function updateAgent(req: Request, env: Env, params: Params): Promise<Response> {
+  const account = await requireAccount(req, env);
+  const role = await membership(env, params.lobbyId, account.userId);
+  if (!role) throw new ProtocolError("forbidden");
+  const body = await parseBody(req, UpdateAgentBody);
+
+  // Names and areas are accepted as people type them ("Mobile App") and stored as handles and topics.
+  const changes: { handle?: string; owns?: string[] } = {};
+  if (body.handle !== undefined) changes.handle = toHandle(body.handle);
+  if (body.owns !== undefined) changes.owns = toAreas(body.owns);
+
+  const actor = { userId: account.userId, isLobbyOwner: role === "owner" };
+  const result = await lobbyStub(env, params.lobbyId!).updateAgent(params.agentId ?? "", changes, actor);
+  if ("error" in result) throw new ProtocolError(result.error);
+  return Response.json(result.profile);
 }
 
 async function removeAgent(req: Request, env: Env, params: Params): Promise<Response> {

@@ -109,6 +109,9 @@ describe("dashboard server", () => {
     expect(added.body).toMatchObject({ handle: "web-claude" });
     expect(await agent.call("lobby.status")).toMatchObject({ handle: "web-claude" });
 
+    const edited = await send(base, "PATCH", `/api/lobbies/${lobbyId}/agents/${added.body.agentId}${q}`, { handle: "Web UI", owns: ["Frontend"] });
+    expect(edited.body).toMatchObject({ handle: "web-ui", owns: ["frontend"] });
+
     expect((await send(base, "DELETE", `/api/lobbies/${lobbyId}/agents/${added.body.agentId}${q}`)).status).toBe(200);
     await expect(agent.call("lobby.status")).rejects.toMatchObject({ code: "no_seat" });
   });

@@ -87,7 +87,8 @@ p { margin: 0; }
   cursor: pointer;
 }
 .icon-btn:hover { color: var(--text); border-color: var(--border); }
-.icon-btn.small { width: 22px; height: 22px; font-size: 15px; margin-left: auto; }
+.icon-btn.small { width: 22px; height: 22px; font-size: 14px; }
+.agent-card header .icon-btn.small:first-of-type { margin-left: auto; }
 
 .chip {
   font: 12px var(--mono);

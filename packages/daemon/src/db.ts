@@ -155,6 +155,10 @@ export class Db {
     return this.db.prepare("SELECT * FROM seats WHERE seat_id = ?").get(seatId) as unknown as Seat;
   }
 
+  setSeatHandle(seatId: string, handle: string): void {
+    this.db.prepare("UPDATE seats SET handle = ? WHERE seat_id = ?").run(handle, seatId);
+  }
+
   setJwt(seatId: string, jwt: string): void {
     this.db.prepare("UPDATE seats SET jwt = ? WHERE seat_id = ?").run(jwt, seatId);
   }

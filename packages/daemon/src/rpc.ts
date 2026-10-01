@@ -1,5 +1,5 @@
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { TIMINGS } from "@agentlobbies/protocol";
+import { ProtocolError, TIMINGS } from "@agentlobbies/protocol";
 
 // Newline-delimited JSON-RPC 2.0. Our string error code travels in `error.data.code`.
 
@@ -51,7 +51,7 @@ export class RpcServer {
           const result = await handler(request.method ?? "", request.params ?? {}, socket);
           this.write(socket, { jsonrpc: "2.0", id: request.id, result: result ?? null });
         } catch (e) {
-          const code = e instanceof DaemonError ? e.code : "internal";
+          const code = e instanceof DaemonError || e instanceof ProtocolError ? e.code : "internal";
           const message = e instanceof Error ? e.message : String(e);
           this.write(socket, { jsonrpc: "2.0", id: request.id, error: { code: -32000, message, data: { code } } });
         }

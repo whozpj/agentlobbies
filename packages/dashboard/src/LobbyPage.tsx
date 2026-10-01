@@ -79,7 +79,7 @@ function AddAgentModal({ lobby, agents, onClose }: { lobby: Lobby; agents: MyAge
       <label className="field">
         <span>Owns <i className="muted">optional</i></span>
         <input value={owns} placeholder="api, auth" onChange={(e) => setOwns(e.target.value)} />
-        <small className="muted">Areas it's responsible for, so others can ask it by area (owner:api).</small>
+        <small className="muted">Areas it answers for, separated by commas, so others can ask it by area (owner:api).</small>
       </label>
       {error && <p className="error">{error}</p>}
     </Modal>
@@ -122,12 +122,53 @@ function PeopleModal({ lobby, me, onClose }: { lobby: Lobby; me: Me | null; onCl
   );
 }
 
-function AgentCard({ agent, selected, onSelect, onRemove }: { agent: Agent; selected: boolean; onSelect: () => void; onRemove?: () => void }) {
+function EditAgentModal({ lobby, agent, onClose }: { lobby: Lobby; agent: Agent; onClose: () => void }) {
+  const [handle, setHandle] = useState(agent.handle);
+  const [owns, setOwns] = useState(agent.owns.join(", "));
+  const [error, setError] = useState("");
+  const save = async () => {
+    try {
+      await api.updateAgent(lobby.lobbyId, agent.agentId, { handle, owns: owns.split(",") });
+      onClose();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+  return (
+    <Modal title={`Edit ${agent.handle}`} onClose={onClose}
+      footer={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn primary" onClick={save}>Save</button></>}>
+      <label className="field">
+        <span>Name</span>
+        <input value={handle} onChange={(e) => setHandle(e.target.value)} autoFocus />
+        <small className="muted">What other agents call it, e.g. web-ui.</small>
+      </label>
+      <label className="field">
+        <span>Owns</span>
+        <input value={owns} placeholder="api, frontend" onChange={(e) => setOwns(e.target.value)} />
+        <small className="muted">Areas it answers for, separated by commas. Others can ask it by area (owner:frontend).</small>
+      </label>
+      {error && <p className="error">{error}</p>}
+    </Modal>
+  );
+}
+
+interface AgentCardProps {
+  agent: Agent;
+  selected: boolean;
+  onSelect: () => void;
+  onEdit?: () => void;
+  onRemove?: () => void;
+}
+
+function AgentCard({ agent, selected, onSelect, onEdit, onRemove }: AgentCardProps) {
   return (
     <article className={selected ? "agent-card selected" : "agent-card"} onClick={onSelect}>
       <header>
         <StatusDot status={agent.status} />
         <b className="handle">{agent.handle}</b>
+        {onEdit && (
+          <button className="icon-btn small" aria-label={`Edit ${agent.handle}`} title="Edit name and areas" onClick={(e) => { e.stopPropagation(); onEdit(); }}>✎</button>
+        )}
         {onRemove && (
           <button className="icon-btn small" aria-label={`Remove ${agent.handle}`} title="Remove from lobby" onClick={(e) => { e.stopPropagation(); onRemove(); }}>×</button>
         )}
@@ -145,6 +186,7 @@ function AgentCard({ agent, selected, onSelect, onRemove }: { agent: Agent; sele
 export function LobbyPage({ lobby, me, agents: myAgents, onChange }: { lobby: Lobby; me: Me | null; agents: MyAgent[]; onChange: () => void }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [dialog, setDialog] = useState<"invite" | "add" | "people" | null>(null);
+  const [editing, setEditing] = useState<Agent | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const isOwner = lobby.myRole === "host";
   const canAdd = lobby.myRole === "host" || lobby.myRole === "member";
@@ -202,10 +244,14 @@ export function LobbyPage({ lobby, me, agents: myAgents, onChange }: { lobby: Lo
         </div>
 
         <div className="dock">
-          {agents.map((a) => (
-            <AgentCard key={a.agentId} agent={a} selected={selected === a.handle} onSelect={() => toggle(a.handle)}
-              onRemove={isOwner || a.owner?.login === me?.login ? () => api.removeAgent(lobby.lobbyId, a.agentId).then(onChange) : undefined} />
-          ))}
+          {agents.map((a) => {
+            const mayChange = isOwner || a.owner?.login === me?.login;
+            return (
+              <AgentCard key={a.agentId} agent={a} selected={selected === a.handle} onSelect={() => toggle(a.handle)}
+                onEdit={mayChange ? () => setEditing(a) : undefined}
+                onRemove={mayChange ? () => api.removeAgent(lobby.lobbyId, a.agentId).then(onChange) : undefined} />
+            );
+          })}
           {agents.length === 0 && (
             <p className="muted dock-empty">No agents yet. {canAdd ? "Use Add agent to put one of yours in." : "Members add their agents here."}</p>
           )}
@@ -223,6 +269,7 @@ export function LobbyPage({ lobby, me, agents: myAgents, onChange }: { lobby: Lo
       {dialog === "invite" && <InviteModal lobby={lobby} onClose={close} />}
       {dialog === "add" && <AddAgentModal lobby={lobby} agents={myAgents} onClose={close} />}
       {dialog === "people" && <PeopleModal lobby={lobby} me={me} onClose={close} />}
+      {editing && <EditAgentModal lobby={lobby} agent={editing} onClose={() => { setEditing(null); onChange(); }} />}
     </div>
   );
 }

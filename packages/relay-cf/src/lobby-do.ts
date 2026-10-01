@@ -5,7 +5,9 @@ import {
 import { DurableObject } from "cloudflare:workers";
 import { headSeq, pageFor } from "./lobby/events";
 import { currentEpoch, keysFrame, markRotate, memberMachines, putKeys, type Machine } from "./lobby/keys";
-import { admit, getAgent, initLobby, isActive, removeFromLobby, roleOf, roster, type AdmitResult, type NewAgent } from "./lobby/membership";
+import {
+  admit, getAgent, initLobby, isActive, removeFromLobby, roleOf, roster, updateProfile, type AdmitResult, type NewAgent,
+} from "./lobby/membership";
 import { getMeta, getSettings, isOpen } from "./lobby/meta";
 import { lobbyExists, migrate } from "./lobby/schema";
 import { doSend } from "./lobby/send";
@@ -91,6 +93,20 @@ export class LobbyDurableObject extends DurableObject<Env> {
     this.fanOut(removeFromLobby(this.ctx.storage, agentId, Date.now()));
     for (const ws of this.ctx.getWebSockets(agentId)) ws.close(4003, "removed");
     return { removed: true };
+  }
+
+  /** An agent's owner, or the lobby owner, renames an agent or changes what it owns. People's names come from GitHub. */
+  async updateAgent(
+    agentId: string, changes: { handle?: string; owns?: string[] }, actor: { userId: string; isLobbyOwner: boolean },
+  ): Promise<{ profile: AgentProfile } | { error: "not_found" | "forbidden" | "handle_taken" }> {
+    const { sql } = this.ctx.storage;
+    const agent = lobbyExists(sql) ? getAgent(sql, agentId) : undefined;
+    if (!isActive(agent)) return { error: "not_found" };
+    if (agent.client === "cli") return { error: "forbidden" };
+    if (agent.owner_id !== actor.userId && !actor.isLobbyOwner) return { error: "forbidden" };
+    const result = updateProfile(this.ctx.storage, agentId, changes);
+    if ("profile" in result) this.broadcastRoster(agentId);
+    return result;
   }
 
   /** A person left or was removed: their agents go, and the lobby key rotates (LLD 15.4). */

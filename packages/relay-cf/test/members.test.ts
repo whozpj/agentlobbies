@@ -92,3 +92,47 @@ describe("codes are gone", () => {
     expect((await postJson(`/v1/lobbies/${lobby.lobbyId}/codes`, {}, randomIp(), lobby.account.token)).status).toBe(404);
   });
 });
+
+describe("editing agents", () => {
+  function patch(lobbyId: string, agentId: string, body: unknown, token: string) {
+    return api(`/v1/lobbies/${lobbyId}/agents/${agentId}`, {
+      method: "PATCH", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(body),
+    });
+  }
+
+  it("renames an agent and sets its areas as typed, telling everyone in the lobby", async () => {
+    const lobby = await createLobby("edit-owner");
+    const agent = await addAgent(lobby.lobbyId, "web-claude", lobby.account);
+    const watcher = await TestSocket.open(lobby);
+    await watcher.hello();
+
+    const res = await patch(lobby.lobbyId, agent.agentId, { handle: "Web UI", owns: ["Frontend", " ", "Mobile App"] }, lobby.account.token);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ handle: "web-ui", owns: ["frontend", "mobile-app"] });
+    const update = await watcher.next("roster", (f) => f.agent.agentId === agent.agentId && f.agent.handle === "web-ui");
+    expect(update.agent.owns).toEqual(["frontend", "mobile-app"]);
+  });
+
+  it("explains an area that can't be one, and refuses a name another agent has", async () => {
+    const lobby = await createLobby("edit-rules");
+    const web = await addAgent(lobby.lobbyId, "web-claude", lobby.account);
+    await addAgent(lobby.lobbyId, "api-codex", lobby.account);
+
+    const bad = await patch(lobby.lobbyId, web.agentId, { owns: ["front/end"] }, lobby.account.token);
+    expect(bad.status).toBe(400);
+    expect((await bad.json<{ error: { message: string } }>()).error.message).toContain('"front/end" isn\'t a valid area');
+    expect((await patch(lobby.lobbyId, web.agentId, { handle: "api-codex" }, lobby.account.token)).status).toBe(409);
+  });
+
+  it("lets only the agent's owner or the lobby owner edit it, and never a person's seat", async () => {
+    const lobby = await createLobby("edit-perms");
+    const bob = await member(lobby, "edit-bob");
+    const carol = await member(lobby, "edit-carol");
+    const bobs = await addAgent(lobby.lobbyId, "bob-claude", bob);
+
+    expect((await patch(lobby.lobbyId, bobs.agentId, { owns: ["x"] }, carol.token)).status).toBe(403);
+    expect((await patch(lobby.lobbyId, bobs.agentId, { owns: ["x"] }, bob.token)).status).toBe(200);
+    expect((await patch(lobby.lobbyId, bobs.agentId, { owns: ["y"] }, lobby.account.token)).status).toBe(200);
+    expect((await patch(lobby.lobbyId, lobby.agentId, { handle: "new-name" }, lobby.account.token)).status).toBe(403);
+  });
+});

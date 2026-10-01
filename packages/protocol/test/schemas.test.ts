@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Envelope, Handle, JoinProfile, LobbyEvent, LobbySettings, Topic } from "../src/index.js";
+import { Envelope, Handle, JoinProfile, LobbyEvent, LobbySettings, Topic, toAreas, toHandle, toSlug } from "../src/index.js";
 import { AGENT_A, AGENT_B, LOBBY, MSG_ID } from "./helpers.js";
 
 const envelope = {
@@ -14,6 +14,16 @@ describe("primitives", () => {
     expect(Handle.safeParse("a".repeat(33)).success).toBe(false);
     expect(Handle.safeParse("Backend").success).toBe(false);
     expect(Handle.safeParse("-lead").success).toBe(false);
+  });
+
+  it("turns typed names and areas into handles and topics", () => {
+    expect(toSlug("Frontend")).toBe("frontend");
+    expect(toSlug("  Mobile   App ")).toBe("mobile-app");
+    expect(Topic.safeParse(toSlug("Frontend")).success).toBe(true);
+    expect(toAreas(["Frontend", " ", "Mobile App"])).toEqual(["frontend", "mobile-app"]);
+    expect(() => toAreas(["front/end"])).toThrow(/"front\/end" isn't a valid area/);
+    expect(toHandle("Web UI")).toBe("web-ui");
+    expect(() => toHandle("x")).toThrow(/2 to 32/);
   });
 
   it("accepts topics with dots and underscores", () => {

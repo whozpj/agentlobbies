@@ -1,5 +1,5 @@
 import {
-  LIMITS, refreshSigningBytes, signEnvelope, generateSeatKeys, toB64u, webCrypto,
+  LIMITS, refreshSigningBytes, signEnvelope, generateSeatKeys, toAreas, toB64u, toHandle, webCrypto,
   type AgentProfile, type Envelope, type LobbyEvent, type Recipient, type ServerFrame,
 } from "@agentlobbies/protocol";
 import { createHash, randomUUID } from "node:crypto";
@@ -242,9 +242,9 @@ export class Daemon extends EventEmitter {
 
       const keys = await generateSeatKeys();
       const profile = {
-        handle: p.handle ? String(p.handle) : defaultHandle(local.client, local.cwd),
+        handle: p.handle ? toHandle(String(p.handle)) : defaultHandle(local.client, local.cwd),
         client: local.client as AgentProfile["client"],
-        owns: (p.owns as string[] | undefined) ?? [],
+        owns: toAreas((p.owns as string[] | undefined) ?? []),
         workingOn: "",
         publicKey: toB64u(keys.publicKey),
       };
@@ -271,6 +271,14 @@ export class Daemon extends EventEmitter {
       }
       this.emit("activity", { type: "agents" });
       return {};
+    },
+
+    /** Renames an agent or changes the areas it owns; the agent is told on its next turn. */
+    "lobby.updateAgent": async (p) => {
+      const body: { handle?: string; owns?: string[] } = {};
+      if (p.handle !== undefined) body.handle = String(p.handle);
+      if (p.owns !== undefined) body.owns = p.owns as string[];
+      return this.relay(`/v1/lobbies/${String(p.lobbyId ?? "")}/agents/${String(p.agentId ?? "")}`, body, await this.accountToken(), "PATCH");
     },
 
     /** The lobby owner removes a person, or you leave (your own login). Their agents go and the key rotates. */
@@ -524,11 +532,15 @@ export class Daemon extends EventEmitter {
     switch (frame.t) {
       case "keys":
         return this.onKeys(seat, conn, frame);
-      case "welcome":
+      case "welcome": {
+        const me = frame.roster.find((a) => a.agentId === seat.agent_id);
+        if (me) this.noticeProfileChange(seat, me);
         this.db.replaceRoster(seat.seat_id, frame.roster);
         this.emit("activity", { type: "roster", lobbyId: seat.lobby_id });
         return;
+      }
       case "roster":
+        if (frame.agent.agentId === seat.agent_id) this.noticeProfileChange(seat, frame.agent);
         this.db.upsertRoster(seat.seat_id, [frame.agent]);
         this.emit("activity", { type: "roster", lobbyId: seat.lobby_id });
         return;
@@ -584,6 +596,27 @@ export class Daemon extends EventEmitter {
     for (const e of events) this.emitMessage(seat, e);
     if (events.some((e) => e.kind === "system")) this.emit("activity", { type: "roster", lobbyId: seat.lobby_id });
     if (this.db.unreadCount(seat.seat_id) > 0) this.wakeWaiter(seat.seat_id);
+  }
+
+  /**
+   * The user renamed this agent or changed what it owns (from a dashboard): keep the seat's name in step
+   * and tell the agent on its next turn. Call before the roster is updated, so the old profile is still there.
+   */
+  private noticeProfileChange(seat: Seat, updated: AgentProfile): void {
+    const before = this.db.roster(seat.seat_id).find((a) => a.agentId === seat.agent_id);
+    if (!before) return;
+    const renamed = before.handle !== updated.handle;
+    const ownsChanged = before.owns.join(",") !== updated.owns.join(",");
+    if (!renamed && !ownsChanged) return;
+
+    const changes = [];
+    if (renamed) {
+      this.db.setSeatHandle(seat.seat_id, updated.handle);
+      changes.push(`you are now ${updated.handle}`);
+    }
+    if (ownsChanged) changes.push(`you now own: ${updated.owns.join(", ") || "nothing"}`);
+    this.db.addNotice(seat.seat_id, `Your user updated you in lobby ${seat.lobby_name ?? seat.lobby_id.slice(0, 8)}: ${changes.join("; ")}.`);
+    this.wakeWaiter(seat.seat_id);
   }
 
   /** Tells whoever waits on this seat's inbox (the Stop hook, an MCP server) how many messages are unread. */

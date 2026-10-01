@@ -46,6 +46,12 @@ export interface Message {
   committedAt: number;
 }
 
+/** A new name and areas, as typed; the relay turns "Mobile App" into mobile-app. */
+export interface AgentChanges {
+  handle: string;
+  owns: string[];
+}
+
 export interface InvitePreview {
   lobbyName: string | null;
   role: "member" | "viewer";
@@ -99,6 +105,7 @@ const local = {
   invite: (lobbyId: string, role: "member" | "viewer") => send<{ url: string }>("POST", `/api/lobbies/${lobbyId}/invites`, { role }),
   acceptInvite: (invite: string) => send<{ lobbyId: string }>("POST", "/api/invites/accept", { invite }),
   addAgent: (lobbyId: string, agent: MyAgent, owns: string[]) => send("POST", `/api/lobbies/${lobbyId}/agents`, { seatKey: agent.seatKey, owns }),
+  updateAgent: (lobbyId: string, agentId: string, changes: AgentChanges) => send("PATCH", `/api/lobbies/${lobbyId}/agents/${agentId}`, changes),
   removeAgent: (lobbyId: string, agentId: string) => send("DELETE", `/api/lobbies/${lobbyId}/agents/${agentId}`),
   removeMember: (lobbyId: string, login: string) => send("DELETE", `/api/lobbies/${lobbyId}/members/${login}`),
 };
@@ -138,6 +145,7 @@ const relay = {
   acceptInvite: (invite: string) => send<{ lobbyId: string }>("POST", "/v1/invites/accept", { token: invite.trim().split("/").pop() }),
   addAgent: (lobbyId: string, agent: MyAgent, owns: string[]) =>
     send("POST", `/v1/lobbies/${lobbyId}/agents`, { machineId: agent.machineId, seatKey: agent.seatKey, owns }),
+  updateAgent: (lobbyId: string, agentId: string, changes: AgentChanges) => send("PATCH", `/v1/lobbies/${lobbyId}/agents/${agentId}`, changes),
   removeAgent: (lobbyId: string, agentId: string) => send("DELETE", `/v1/lobbies/${lobbyId}/agents/${agentId}`),
   removeMember: (lobbyId: string, login: string) => send("DELETE", `/v1/lobbies/${lobbyId}/members/${login}`),
 };
