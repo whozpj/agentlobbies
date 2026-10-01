@@ -93,20 +93,41 @@ function withoutOurHooks(hooks: Hooks): Hooks {
   return kept;
 }
 
-/** Delivers messages after any tool call, on each prompt, and wakes an idle agent (asyncRewake). */
+/**
+ * Delivers messages after any tool call and on each prompt, and wakes an idle agent (asyncRewake).
+ * Waiting starts when a session opens and again after each turn, so even a session that has
+ * never taken a turn can be woken.
+ */
 function ourHooks(hookCommand: string): Hooks {
+  const wait = { type: "command", command: `${hookCommand} wait`, asyncRewake: true, timeout: 3600 };
   return {
     PostToolUse: [{ hooks: [{ type: "command", command: `${hookCommand} post-tool-use` }] }],
     UserPromptSubmit: [{ hooks: [{ type: "command", command: `${hookCommand} prompt` }] }],
-    Stop: [{ hooks: [{ type: "command", command: `${hookCommand} wait`, asyncRewake: true, timeout: 3600 }] }],
+    SessionStart: [{ hooks: [wait] }],
+    Stop: [{ hooks: [wait] }],
   };
+}
+
+/**
+ * False when some of our hooks are installed but not all of them: an install from an older version
+ * that should be updated. No hooks at all is fine (an install through npx can't have them).
+ */
+function hooksComplete(home: string): boolean {
+  const settings = JSON.parse(readText(join(home, ".claude", "settings.json")) || "{}");
+  const hooks: Hooks = settings.hooks ?? {};
+  let found = 0;
+  const events = Object.keys(ourHooks("agentlobbies-hook"));
+  for (const event of events) {
+    if ((hooks[event] ?? []).some(isOurs)) found++;
+  }
+  return found === 0 || found === events.length;
 }
 
 const claudeCode: ClientConfig = {
   id: "claude-code",
   name: "Claude Code",
   detect: (home) => existsSync(join(home, ".claude.json")) || existsSync(join(home, ".claude")),
-  isInstalled: (home) => Boolean(JSON.parse(readText(join(home, ".claude.json")) || "{}").mcpServers?.agentlobbies),
+  isInstalled: (home) => Boolean(JSON.parse(readText(join(home, ".claude.json")) || "{}").mcpServers?.agentlobbies) && hooksComplete(home),
   install(home, cmd, hookCommand) {
     const path = join(home, ".claude.json");
     const config = JSON.parse(readText(path) || "{}");

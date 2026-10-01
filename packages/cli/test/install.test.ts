@@ -86,6 +86,19 @@ describe("Claude Code hooks", () => {
     ]);
     expect(hooks.UserPromptSubmit).toEqual([{ hooks: [{ type: "command", command: "agentlobbies-hook prompt" }] }]);
     expect(hooks.Stop).toEqual([{ hooks: [{ type: "command", command: "agentlobbies-hook wait", asyncRewake: true, timeout: 3600 }] }]);
+    // A session that was just opened has had no turn yet, so it listens from SessionStart.
+    expect(hooks.SessionStart).toEqual([{ hooks: [{ type: "command", command: "agentlobbies-hook wait", asyncRewake: true, timeout: 3600 }] }]);
+  });
+
+  it("counts as installed only with every hook, so doctor asks older installs to update", () => {
+    const home = homeWith({ ".claude.json": "{}" });
+    claude.install(home, command, "agentlobbies-hook");
+    expect(claude.isInstalled(home)).toBe(true);
+    const settingsPath = join(home, ".claude", "settings.json");
+    const withoutStart = JSON.parse(readFileSync(settingsPath, "utf8"));
+    delete withoutStart.hooks.SessionStart;
+    writeFileSync(settingsPath, JSON.stringify(withoutStart));
+    expect(claude.isInstalled(home)).toBe(false);
   });
 
   it("uninstall removes only our hooks", () => {

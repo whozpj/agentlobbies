@@ -57,10 +57,19 @@ export class Machine {
       socket.on("connect", () => socket.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) + "\n"));
       socket.on("data", (d) => {
         buffer += d;
-        if (!buffer.includes("\n")) return;
-        const reply = JSON.parse(buffer.slice(0, buffer.indexOf("\n")));
-        socket.end();
-        reply.error ? reject(new Error(reply.error.message)) : resolve(reply.result);
+        // The daemon also pushes notifications to every connection; wait for the line answering our call.
+        let newline = buffer.indexOf("\n");
+        while (newline >= 0) {
+          const message = JSON.parse(buffer.slice(0, newline));
+          buffer = buffer.slice(newline + 1);
+          if (message.id === 1) {
+            socket.end();
+            if (message.error) reject(new Error(message.error.message));
+            else resolve(message.result);
+            return;
+          }
+          newline = buffer.indexOf("\n");
+        }
       });
       socket.on("error", reject);
     });

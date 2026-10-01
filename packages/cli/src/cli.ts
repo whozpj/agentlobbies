@@ -173,7 +173,7 @@ const install = defineCommand({
 const uninstall = defineCommand({
   meta: { description: "Remove Agent Lobbies from your coding agents" },
   run: () => {
-    for (const client of CLIENTS.filter((c) => c.isInstalled(homedir()))) {
+    for (const client of detectClients(homedir())) {
       client.uninstall(homedir());
       console.log(`${pc.green("✓")} ${client.name}: removed`);
     }
@@ -218,7 +218,7 @@ const doctor = defineCommand({
     check(healthy, `Relay reachable at ${url}`, `Relay not reachable at ${url}; check your network or AGENTLOBBIES_RELAY_URL`);
 
     for (const client of detectClients(homedir())) {
-      check(client.isInstalled(homedir()), `${client.name} configured`, `${client.name} not configured; run \`agentlobbies install\``);
+      check(client.isInstalled(homedir()), `${client.name} configured`, `${client.name} not configured or out of date; run \`agentlobbies install\``);
     }
     process.exitCode = failed ? 1 : 0;
   },
