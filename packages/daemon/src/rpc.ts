@@ -111,7 +111,10 @@ export class RpcClient {
       else call.resolve(msg.result);
     });
     socket.on("close", () => {
-      for (const call of this.pending.values()) call.reject(new DaemonError("daemon_unavailable", "daemon connection closed"));
+      for (const call of this.pending.values()) {
+        clearTimeout(call.timer); // a timer left running would keep this process alive until it fired
+        call.reject(new DaemonError("daemon_unavailable", "daemon connection closed"));
+      }
       this.pending.clear();
     });
   }

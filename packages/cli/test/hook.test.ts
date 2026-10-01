@@ -106,4 +106,16 @@ describe("agentlobbies-hook", () => {
     expect(r.code).toBe(2);
     expect(r.stderr).toContain("are you there?");
   });
+
+  it("keeps waiting through a daemon restart, such as an upgrade, and still wakes the agent", async () => {
+    const waiting = runHook("wait", { cwd: webDir });
+    await new Promise((r) => setTimeout(r, 1_000));
+    await web.call("daemon.shutdown");
+    await new Promise((r) => setTimeout(r, 1_000));
+
+    await send("Still there after the restart?"); // reconnects, which starts a new daemon
+    const woken = await waiting;
+    expect(woken.code).toBe(2);
+    expect(woken.stderr).toContain("Still there after the restart?");
+  }, 30_000);
 });

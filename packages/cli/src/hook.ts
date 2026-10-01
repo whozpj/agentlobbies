@@ -14,17 +14,49 @@ async function readInput(): Promise<{ cwd: string; tool_name?: string }> {
 
 type Call = <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>;
 
-/** Waits for unread messages. Until the user adds this agent to a lobby, keeps checking for its seat. */
-async function waitForMessages(call: Call): Promise<number> {
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Opens a daemon session for this agent's folder, or returns undefined if no daemon is running. */
+async function connect(cwd: string): Promise<{ call: Call; close: () => void } | undefined> {
+  let daemon: RpcClient;
+  try {
+    daemon = await RpcClient.connect(socketPath(defaultHome()));
+  } catch {
+    return undefined;
+  }
+  try {
+    const { sessionId } = await daemon.call<{ sessionId: string }>("session.open", { client: "claude-code", cwd });
+    const call: Call = (method, params = {}, timeoutMs) => daemon.call(method, { sessionId, ...params }, timeoutMs);
+    return { call, close: () => daemon.close() };
+  } catch {
+    daemon.close();
+    return undefined;
+  }
+}
+
+/**
+ * Waits for unread messages. Keeps waiting until the user adds this agent to a lobby, and through
+ * daemon restarts (an upgrade replaces the daemon): reconnects instead of giving up.
+ */
+async function waitForMessages(cwd: string): Promise<number> {
   const deadline = Date.now() + WAIT_MS;
   while (Date.now() < deadline) {
+    const daemon = await connect(cwd);
+    if (!daemon) {
+      await sleep(2_000); // the daemon is restarting
+      continue;
+    }
     try {
       const remaining = deadline - Date.now();
-      const result = await call<{ unread?: number }>("inbox.wait", { timeoutMs: remaining }, remaining + 5_000);
+      const result = await daemon.call<{ unread?: number; cancelled?: boolean }>("inbox.wait", { timeoutMs: remaining }, remaining + 5_000);
+      if (result.cancelled) return 0; // a newer wait for this agent took over
       return result.unread ?? 0;
     } catch (e) {
-      if ((e as { code?: string }).code !== "no_seat") return 0;
-      await new Promise((r) => setTimeout(r, 2_000));
+      const code = (e as { code?: string }).code;
+      if (code !== "no_seat" && code !== "daemon_unavailable") return 0;
+      await sleep(2_000);
+    } finally {
+      daemon.close();
     }
   }
   return 0;
@@ -33,27 +65,20 @@ async function waitForMessages(call: Call): Promise<number> {
 async function main(): Promise<number> {
   const event = process.argv[2];
   const input = await readInput();
-  let daemon: RpcClient;
-  try {
-    daemon = await RpcClient.connect(socketPath(defaultHome()));
-  } catch {
-    return 0; // no daemon running, so this agent isn't in a lobby
+
+  if (event === "wait") {
+    const unread = await waitForMessages(input.cwd);
+    if (!unread) return 0;
+  } else if (event === "post-tool-use" && input.tool_name?.startsWith("mcp__agentlobbies__")) {
+    return 0;
   }
 
+  const daemon = await connect(input.cwd);
+  if (!daemon) return 0; // no daemon running, so this agent isn't in a lobby
   try {
-    const { sessionId } = await daemon.call("session.open", { client: "claude-code", cwd: input.cwd });
-    const call: Call = (method, params = {}, timeoutMs) => daemon.call(method, { sessionId, ...params }, timeoutMs);
-
-    if (event === "wait") {
-      const unread = await waitForMessages(call);
-      if (!unread) return 0;
-    } else if (event === "post-tool-use" && input.tool_name?.startsWith("mcp__agentlobbies__")) {
-      return 0;
-    }
-
-    const messages = await call<SurfacedMessage[]>("inbox.pull", { limit: 5 });
+    const messages = await daemon.call<SurfacedMessage[]>("inbox.pull", { limit: 5 });
     if (messages.length === 0) return 0;
-    const { unread } = await call<{ unread: number }>("inbox.peek");
+    const { unread } = await daemon.call<{ unread: number }>("inbox.peek");
     const text = renderPending(messages, unread);
 
     if (event === "wait") {
