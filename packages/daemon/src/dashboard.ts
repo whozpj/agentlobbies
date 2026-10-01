@@ -63,7 +63,7 @@ export async function startDashboard(source: DashboardSource, staticDir: string 
 
 async function handleApi(source: DashboardSource, req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const route = `${req.method} ${url.pathname}`;
-  const lobby = url.pathname.match(/^\/api\/lobbies\/([0-9a-f]{64})\//)?.[1];
+  const lobby = url.pathname.match(/^\/api\/lobbies\/([0-9a-f]{64})(?:\/|$)/)?.[1];
   const agentId = url.pathname.match(/\/agents\/([0-9A-HJKMNP-TV-Z]{26})$/)?.[1];
   const login = url.pathname.match(/\/members\/([\w-]+)$/)?.[1];
   const body = async () => JSON.parse((await readBody(req)) || "{}") as Record<string, unknown>;
@@ -81,6 +81,8 @@ async function handleApi(source: DashboardSource, req: IncomingMessage, res: Ser
   if (lobby && agentId && req.method === "DELETE") return reply("lobby.removeAgent", { lobbyId: lobby, agentId });
   if (lobby && agentId && req.method === "PATCH") return reply("lobby.updateAgent", { ...(await body()), lobbyId: lobby, agentId });
   if (lobby && login && req.method === "DELETE") return reply("lobby.removeMember", { lobbyId: lobby, login });
+  if (route === `DELETE /api/lobbies/${lobby}`) return reply("lobby.delete", { lobbyId: lobby });
+  if (route === `POST /api/lobbies/${lobby}/forget`) return reply("lobby.forget", { lobbyId: lobby });
   send(res, 404, { error: "not found" });
 }
 

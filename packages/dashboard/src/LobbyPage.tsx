@@ -122,6 +122,32 @@ function PeopleModal({ lobby, me, onClose }: { lobby: Lobby; me: Me | null; onCl
   );
 }
 
+/** Deleting is for everyone and can't be undone; an old lobby without an owner can only be dropped from this machine. */
+function DeleteLobbyModal({ lobby, onClose }: { lobby: Lobby; onClose: () => void }) {
+  const [error, setError] = useState("");
+  const isOwner = lobby.myRole === "host";
+  const confirm = async () => {
+    try {
+      if (isOwner) await api.deleteLobby(lobby.lobbyId);
+      else await api.forgetLobby(lobby.lobbyId);
+      location.hash = "#/";
+      onClose();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+  return (
+    <Modal title={isOwner ? `Delete ${lobbyName(lobby)}?` : `Remove ${lobbyName(lobby)} from this machine?`} onClose={onClose}
+      footer={<><button className="btn" onClick={onClose}>Cancel</button>
+        <button className="btn danger solid" onClick={confirm}>{isOwner ? "Delete lobby" : "Remove"}</button></>}>
+      {isOwner
+        ? <p>This removes the lobby for everyone in it and erases its messages and keys. It can't be undone.</p>
+        : <p>This lobby is from before lobbies had owners, so no one can delete it. Removing it clears it from this machine.</p>}
+      {error && <p className="error">{error}</p>}
+    </Modal>
+  );
+}
+
 function EditAgentModal({ lobby, agent, onClose }: { lobby: Lobby; agent: Agent; onClose: () => void }) {
   const [handle, setHandle] = useState(agent.handle);
   const [owns, setOwns] = useState(agent.owns.join(", "));
@@ -185,7 +211,7 @@ function AgentCard({ agent, selected, onSelect, onEdit, onRemove }: AgentCardPro
 
 export function LobbyPage({ lobby, me, agents: myAgents, onChange }: { lobby: Lobby; me: Me | null; agents: MyAgent[]; onChange: () => void }) {
   const [messages, setMessages] = useState<Message[]>([]);
-  const [dialog, setDialog] = useState<"invite" | "add" | "people" | null>(null);
+  const [dialog, setDialog] = useState<"invite" | "add" | "people" | "delete" | null>(null);
   const [editing, setEditing] = useState<Agent | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const isOwner = lobby.myRole === "host";
@@ -236,6 +262,8 @@ export function LobbyPage({ lobby, me, agents: myAgents, onChange }: { lobby: Lo
             </button>
             {isOwner && <button className="btn" onClick={() => setDialog("invite")}>Invite people</button>}
             {canAdd && <button className="btn primary" onClick={() => setDialog("add")}>Add agent</button>}
+            {isOwner && <button className="btn danger" onClick={() => setDialog("delete")}>Delete lobby</button>}
+            {!lobby.myRole && !isHosted && <button className="btn danger" onClick={() => setDialog("delete")}>Remove from this machine</button>}
           </div>
         </div>
 
@@ -269,6 +297,7 @@ export function LobbyPage({ lobby, me, agents: myAgents, onChange }: { lobby: Lo
       {dialog === "invite" && <InviteModal lobby={lobby} onClose={close} />}
       {dialog === "add" && <AddAgentModal lobby={lobby} agents={myAgents} onClose={close} />}
       {dialog === "people" && <PeopleModal lobby={lobby} me={me} onClose={close} />}
+      {dialog === "delete" && <DeleteLobbyModal lobby={lobby} onClose={close} />}
       {editing && <EditAgentModal lobby={lobby} agent={editing} onClose={() => { setEditing(null); onChange(); }} />}
     </div>
   );

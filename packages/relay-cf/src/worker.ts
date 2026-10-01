@@ -65,6 +65,7 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
   ["PATCH", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/agents/:agentId" }), updateAgent],
   ["DELETE", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/agents/:agentId" }), removeAgent],
   ["DELETE", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/members/:login" }), removeMember],
+  ["DELETE", new URLPattern({ pathname: "/v1/lobbies/:lobbyId" }), deleteLobby],
   ["GET", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/events" }), listEvents],
   ["GET", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/ws" }), seatSocket],
   ["GET", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/watch" }), watchSocket],
@@ -347,6 +348,25 @@ async function removeMember(req: Request, env: Env, params: Params): Promise<Res
   await env.DB.prepare("DELETE FROM lobby_members WHERE lobby_id = ? AND user_id = ?").bind(params.lobbyId, target.user_id).run();
   await lobbyStub(env, params.lobbyId!).removeUser(target.user_id);
   await userStub(env, target.user_id).notify({ t: "lobbies" });
+  return Response.json({});
+}
+
+/**
+ * The owner deletes a lobby for everyone: its messages and keys are erased, and members' machines
+ * drop it when their connections close. The lobby row stays, marked closed, so its id is never reused.
+ */
+async function deleteLobby(req: Request, env: Env, params: Params): Promise<Response> {
+  const account = await requireAccount(req, env);
+  if ((await membership(env, params.lobbyId, account.userId)) !== "owner") throw new ProtocolError("forbidden", "only the lobby owner can delete it");
+
+  const { results: members } = await env.DB.prepare("SELECT user_id FROM lobby_members WHERE lobby_id = ?").bind(params.lobbyId).all<{ user_id: string }>();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE lobbies SET status = 'closed' WHERE lobby_id = ?").bind(params.lobbyId),
+    env.DB.prepare("DELETE FROM lobby_members WHERE lobby_id = ?").bind(params.lobbyId),
+    env.DB.prepare("DELETE FROM invites WHERE lobby_id = ?").bind(params.lobbyId),
+  ]);
+  await lobbyStub(env, params.lobbyId!).deleteLobby();
+  for (const member of members) await userStub(env, member.user_id).notify({ t: "lobbies" });
   return Response.json({});
 }
 

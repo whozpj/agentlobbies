@@ -1,3 +1,5 @@
+import { runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
 import { TestSocket, acceptInvite, addAgent, addPerson, api, createInvite, createLobby, fakeGitHub, member, postJson, randomIp, signIn } from "./client";
 import { newAgent } from "./helpers";
@@ -134,5 +136,33 @@ describe("editing agents", () => {
     expect((await patch(lobby.lobbyId, bobs.agentId, { owns: ["x"] }, bob.token)).status).toBe(200);
     expect((await patch(lobby.lobbyId, bobs.agentId, { owns: ["y"] }, lobby.account.token)).status).toBe(200);
     expect((await patch(lobby.lobbyId, lobby.agentId, { handle: "new-name" }, lobby.account.token)).status).toBe(403);
+  });
+});
+
+describe("deleting a lobby", () => {
+  function del(lobbyId: string, token: string) {
+    return api(`/v1/lobbies/${lobbyId}`, { method: "DELETE", headers: { authorization: `Bearer ${token}` } });
+  }
+
+  it("lets only the owner delete it, then closes it for everyone and erases what it stored", async () => {
+    const lobby = await createLobby("doomed");
+    const bob = await member(lobby, "doomed-bob");
+    const bobsAgent = await addAgent(lobby.lobbyId, "bob-claude", bob);
+    const socket = await TestSocket.open(bobsAgent);
+    await socket.hello();
+
+    expect((await del(lobby.lobbyId, bob.token)).status).toBe(403);
+    expect((await del(lobby.lobbyId, lobby.account.token)).status).toBe(200);
+
+    expect(await socket.closed()).toBe(4010);
+    const lobbies = await api("/v1/lobbies", { headers: { authorization: `Bearer ${bob.token}` } });
+    expect(await lobbies.json()).toEqual([]);
+    expect((await api(`/v1/lobbies/${lobby.lobbyId}/events`, { headers: { authorization: `Bearer ${lobby.account.token}` } })).status).toBe(403);
+
+    const again = await TestSocket.open(bobsAgent);
+    expect(await again.closed()).toBe(4010);
+    const stored = await runInDurableObject(env.LOBBY.get(env.LOBBY.idFromString(lobby.lobbyId)), (_instance, state) =>
+      state.storage.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '_cf%'").toArray());
+    expect(stored).toEqual([]);
   });
 });

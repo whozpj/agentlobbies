@@ -124,6 +124,12 @@ export class LobbyDurableObject extends DurableObject<Env> {
     await this.rotateKeys();
   }
 
+  /** The owner deleted the lobby: everyone is disconnected and everything stored here is erased. */
+  async deleteLobby(): Promise<void> {
+    for (const ws of this.ctx.getWebSockets()) ws.close(4010, "lobby deleted");
+    await this.ctx.storage.deleteAll();
+  }
+
   /** Member machines changed (someone joined or signed in on a new machine): tell everyone who needs a key. */
   async refreshKeys(): Promise<void> {
     const { sql } = this.ctx.storage;
@@ -184,7 +190,7 @@ export class LobbyDurableObject extends DurableObject<Env> {
     }
 
     const agentId = req.headers.get("X-Agent-Id") ?? "";
-    const agent = getAgent(sql, agentId);
+    const agent = open ? getAgent(sql, agentId) : undefined;
     if (!open || !isActive(agent)) {
       this.ctx.acceptWebSocket(server);
       if (open) server.close(4003, "not a member");

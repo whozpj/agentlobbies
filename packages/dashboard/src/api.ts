@@ -108,6 +108,8 @@ const local = {
   updateAgent: (lobbyId: string, agentId: string, changes: AgentChanges) => send("PATCH", `/api/lobbies/${lobbyId}/agents/${agentId}`, changes),
   removeAgent: (lobbyId: string, agentId: string) => send("DELETE", `/api/lobbies/${lobbyId}/agents/${agentId}`),
   removeMember: (lobbyId: string, login: string) => send("DELETE", `/api/lobbies/${lobbyId}/members/${login}`),
+  deleteLobby: (lobbyId: string) => send("DELETE", `/api/lobbies/${lobbyId}`),
+  forgetLobby: (lobbyId: string) => send("POST", `/api/lobbies/${lobbyId}/forget`),
 };
 
 interface RelayLobby {
@@ -148,6 +150,9 @@ const relay = {
   updateAgent: (lobbyId: string, agentId: string, changes: AgentChanges) => send("PATCH", `/v1/lobbies/${lobbyId}/agents/${agentId}`, changes),
   removeAgent: (lobbyId: string, agentId: string) => send("DELETE", `/v1/lobbies/${lobbyId}/agents/${agentId}`),
   removeMember: (lobbyId: string, login: string) => send("DELETE", `/v1/lobbies/${lobbyId}/members/${login}`),
+  deleteLobby: (lobbyId: string) => send("DELETE", `/v1/lobbies/${lobbyId}`),
+  // The web only lists lobbies you belong to, so there is nothing to forget there.
+  forgetLobby: async (_lobbyId: string) => {},
 };
 
 /** A WebSocket that reconnects after a drop and keeps itself alive with heartbeats. */

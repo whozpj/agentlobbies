@@ -269,3 +269,26 @@ describe("editing an agent", () => {
     expect(await web.until("lobby_status", "you are now web-ui")).toContain("you now own: frontend, design-system");
   });
 });
+
+describe("deleting a lobby", () => {
+  it("lets the owner delete a lobby from the browser after confirming, and members' machines drop it", async () => {
+    const owner = new Machine();
+    await owner.login("deleter");
+    await owner.createLobby("temporary");
+    const link = (await owner.cli(owner.home, "invite")).match(/https?:\/\/\S+\/invite\/[\w-]+/)![0];
+    const guest = new Machine();
+    await guest.login("guest2");
+    await guest.cli(guest.home, "accept", link);
+    await until(async () => (await keyEpoch(guest, "temporary")) === 1, "the guest to get the key");
+
+    const page = await signedIn(owner);
+    await page.getByRole("link", { name: "temporary" }).click();
+    await page.getByRole("button", { name: "Delete lobby" }).click();
+    await pwExpect(page.getByRole("dialog")).toContainText("can't be undone");
+    await page.getByRole("dialog").getByRole("button", { name: "Delete lobby" }).click();
+
+    await pwExpect(page.getByText("No lobbies yet")).toBeVisible();
+    await until(async () => (await guest.rpc<unknown[]>("dashboard.lobbies")).length === 0, "the guest's machine to drop the lobby");
+    await until(async () => (await owner.rpc<unknown[]>("dashboard.lobbies")).length === 0, "the owner's machine to drop the lobby");
+  });
+});

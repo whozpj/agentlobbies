@@ -281,6 +281,23 @@ export class Daemon extends EventEmitter {
       return this.relay(`/v1/lobbies/${String(p.lobbyId ?? "")}/agents/${String(p.agentId ?? "")}`, body, await this.accountToken(), "PATCH");
     },
 
+    /** The owner deletes a lobby for everyone. */
+    "lobby.delete": async (p) => {
+      const lobbyId = String(p.lobbyId ?? "");
+      await this.relay(`/v1/lobbies/${lobbyId}`, undefined, await this.accountToken(), "DELETE");
+      this.forgetLobby(lobbyId);
+      return {};
+    },
+
+    /**
+     * Drops a lobby from this machine only: for old lobbies from before lobbies had owners. A lobby you
+     * are still a member of comes back on the next sync; leave it or delete it instead.
+     */
+    "lobby.forget": async (p) => {
+      this.forgetLobby(String(p.lobbyId ?? ""));
+      return {};
+    },
+
     /** The lobby owner removes a person, or you leave (your own login). Their agents go and the key rotates. */
     "lobby.removeMember": async (p) => {
       const lobbyId = String(p.lobbyId ?? "");
@@ -520,7 +537,12 @@ export class Daemon extends EventEmitter {
     if (state === "live") {
       for (const frame of this.db.pendingOutbox(seat.seat_id)) conn.send(frame as never);
     }
-    if (state === "kicked" || state === "closed" || state === "upgrade_required") {
+    if (state === "closed") {
+      // The lobby was deleted: keep nothing from it on this machine.
+      this.forgetLobby(seat.lobby_id);
+      return;
+    }
+    if (state === "kicked" || state === "upgrade_required") {
       this.db.setSeatState(seat.seat_id, state);
     }
     this.emit("notify", { method: "seat.state", params: { seatId: seat.seat_id, state } });
@@ -666,6 +688,18 @@ export class Daemon extends EventEmitter {
     this.waiters.delete(reqId);
   }
 
+
+  /** Disconnects this machine's seats in a lobby and erases what it kept about it. */
+  private forgetLobby(lobbyId: string): void {
+    for (const seat of this.db.activeSeats()) {
+      if (seat.lobby_id !== lobbyId) continue;
+      this.connections.get(seat.seat_id)?.stop();
+      this.connections.delete(seat.seat_id);
+    }
+    this.db.forgetLobby(lobbyId);
+    this.emit("activity", { type: "lobbies" });
+    this.emit("activity", { type: "agents" });
+  }
 
   /** Hosts see every message, so a local host seat gives the fullest view of a lobby. */
   private viewSeat(seats: Seat[]): Seat {

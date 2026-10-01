@@ -199,6 +199,19 @@ export class Db {
     this.db.prepare("UPDATE inbox SET event_json = ?, locked = 0 WHERE seat_id = ? AND seq = ?").run(eventJson, seatId, seq);
   }
 
+  /** Erases everything this machine keeps about a lobby: its seats' messages, rosters, notices, and keys. */
+  forgetLobby(lobbyId: string): void {
+    const seatIds = (this.db.prepare("SELECT seat_id FROM seats WHERE lobby_id = ?").all(lobbyId) as { seat_id: string }[]).map((r) => r.seat_id);
+    for (const seatId of seatIds) {
+      this.db.prepare("DELETE FROM inbox WHERE seat_id = ?").run(seatId);
+      this.db.prepare("DELETE FROM roster WHERE seat_id = ?").run(seatId);
+      this.db.prepare("DELETE FROM notices WHERE seat_id = ?").run(seatId);
+      this.db.prepare("DELETE FROM outbox WHERE seat_id = ?").run(seatId);
+    }
+    this.db.prepare("UPDATE seats SET state = 'left' WHERE lobby_id = ? AND state = 'active'").run(lobbyId);
+    this.db.prepare("DELETE FROM lobby_keys WHERE lobby_id = ?").run(lobbyId);
+  }
+
   saveLobbyKey(lobbyId: string, epoch: number, key: Uint8Array): void {
     this.db.prepare("INSERT OR IGNORE INTO lobby_keys (lobby_id, epoch, key) VALUES (?, ?, ?)").run(lobbyId, epoch, Buffer.from(key).toString("base64url"));
   }

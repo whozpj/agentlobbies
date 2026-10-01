@@ -104,12 +104,13 @@ describe("editing your agents", () => {
     const { agentId, handle } = await daemon.call("lobby.addAgent", { lobbyId, seatKey: web.seatKey, owns: ["Frontend"] });
     expect(handle).toBe("web-claude");
     await web.call("inbox.pull", { limit: 5 }); // the "you were added" notice
-    const players = await until(() => web.call("lobby.players"), (p: { handle: string }[]) => p.some((a) => a.handle === "web-claude"));
-    expect(players.find((a: { handle: string }) => a.handle === "web-claude").owns).toEqual(["frontend"]);
+    type Player = { handle: string; owns: string[] };
+    const players = await until<Player[]>(() => web.call("lobby.players"), (p) => p.some((a) => a.handle === "web-claude"));
+    expect(players.find((a) => a.handle === "web-claude")?.owns).toEqual(["frontend"]);
 
     await daemon.call("lobby.updateAgent", { lobbyId, agentId, handle: "Web UI", owns: ["frontend", "Design System"] });
-    const [notice] = await until(() => web.call("inbox.pull", { limit: 5 }), (m: unknown[]) => m.length > 0);
-    expect(notice.body).toBe("Your user updated you in lobby edits: you are now web-ui; you now own: frontend, design-system.");
+    const [notice] = await until<{ body: string }[]>(() => web.call("inbox.pull", { limit: 5 }), (m) => m.length > 0);
+    expect(notice?.body).toBe("Your user updated you in lobby edits: you are now web-ui; you now own: frontend, design-system.");
     expect(await web.call("lobby.status")).toMatchObject({ handle: "web-ui" });
   });
 
@@ -119,5 +120,34 @@ describe("editing your agents", () => {
     const { lobbyId } = await daemon.call("lobby.create", { name: "bad-area" });
     await expect(daemon.call("lobby.addAgent", { lobbyId, seatKey: web.seatKey, owns: ["front/end"] }))
       .rejects.toThrow(/"front\/end" isn't a valid area/);
+  });
+});
+
+describe("deleting lobbies", () => {
+  it("deletes a lobby for everyone and erases it from every member's machine", async () => {
+    const owner = await startDaemon("owner");
+    const { lobbyId } = await owner.call("lobby.create", { name: "short-lived" });
+    const { url } = await owner.call("invite.create", { lobbyId });
+    const guest = await startDaemon("guest");
+    await guest.call("invite.accept", { invite: url });
+    await until(() => guest.call("dashboard.lobbies", {}), (l: { keyEpoch: number }[]) => l[0]?.keyEpoch === 1);
+
+    await owner.call("lobby.delete", { lobbyId });
+    expect(await owner.call("dashboard.lobbies", {})).toEqual([]);
+    const left = await until(() => guest.call("dashboard.lobbies", {}), (l: unknown[]) => l.length === 0);
+    expect(left).toEqual([]);
+  });
+
+  it("only lets the owner delete, and forgets a lobby on this machine alone", async () => {
+    const owner = await startDaemon("owner");
+    const { lobbyId } = await owner.call("lobby.create", { name: "kept" });
+    const { url } = await owner.call("invite.create", { lobbyId });
+    const guest = await startDaemon("guest");
+    await guest.call("invite.accept", { invite: url });
+    await expect(guest.call("lobby.delete", { lobbyId })).rejects.toThrow(/only the lobby owner/);
+
+    await guest.call("lobby.forget", { lobbyId });
+    expect(await guest.call("dashboard.lobbies", {})).toEqual([]);
+    expect(await owner.call("dashboard.lobbies", {})).toHaveLength(1);
   });
 });

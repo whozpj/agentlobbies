@@ -114,6 +114,10 @@ describe("dashboard server", () => {
 
     expect((await send(base, "DELETE", `/api/lobbies/${lobbyId}/agents/${added.body.agentId}${q}`)).status).toBe(200);
     await expect(agent.call("lobby.status")).rejects.toMatchObject({ code: "no_seat" });
+
+    expect((await send(base, "DELETE", `/api/lobbies/${lobbyId}${q}`)).status).toBe(200);
+    const remaining = (await send(base, "GET", `/api/lobbies${q}`)).body as { lobbyId: string }[];
+    expect(remaining.map((l) => l.lobbyId)).not.toContain(lobbyId);
   });
 
   it("lets the owner remove a person, but not themselves", async () => {
