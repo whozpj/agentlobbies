@@ -84,10 +84,10 @@ describe("daemon against the real relay", () => {
     await expect(web.call("lobby.status")).rejects.toMatchObject({ code: "no_seat", message: expect.stringContaining("dashboard") });
   });
 
-  it("shows connected peers as active, not the stale status from their joined event", async () => {
+  it("shows connected peers as online and waiting, not the stale status from their joined event", async () => {
     const { api } = await lobbyWithTwoAgents();
-    const players = await eventually(() => api.call("lobby.players"), (p) => p.every((a: { status: string }) => a.status === "active"));
-    expect(players.map((a: { status: string }) => a.status)).toEqual(["active", "active", "active"]);
+    const players = await eventually(() => api.call("lobby.players"), (p) => p.every((a: { status: string }) => a.status === "idle"));
+    expect(players.map((a: { status: string }) => a.status)).toEqual(["idle", "idle", "idle"]);
   });
 
   it("refreshes an invalid or expired token by itself and reconnects (C6)", async () => {

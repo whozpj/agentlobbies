@@ -25,7 +25,8 @@ async function connect(cwd: string): Promise<{ call: Call; close: () => void } |
     return undefined;
   }
   try {
-    const { sessionId } = await daemon.call<{ sessionId: string }>("session.open", { client: "claude-code", cwd });
+    // A hook can outlive its agent, so its session doesn't count as the agent running.
+    const { sessionId } = await daemon.call<{ sessionId: string }>("session.open", { client: "claude-code", cwd, passive: true });
     const call: Call = (method, params = {}, timeoutMs) => daemon.call(method, { sessionId, ...params }, timeoutMs);
     return { call, close: () => daemon.close() };
   } catch {
@@ -47,6 +48,7 @@ async function waitForMessages(cwd: string): Promise<number> {
       continue;
     }
     try {
+      await daemon.call("presence.set", { status: "idle" }).catch(() => {}); // shown as "waiting"
       const remaining = deadline - Date.now();
       const result = await daemon.call<{ unread?: number; cancelled?: boolean }>("inbox.wait", { timeoutMs: remaining }, remaining + 5_000);
       if (result.cancelled) return 0; // a newer wait for this agent took over
@@ -76,6 +78,7 @@ async function main(): Promise<number> {
   const daemon = await connect(input.cwd);
   if (!daemon) return 0; // no daemon running, so this agent isn't in a lobby
   try {
+    if (event !== "wait") await daemon.call("presence.set", { status: "active" }).catch(() => {}); // shown as "working"
     const messages = await daemon.call<SurfacedMessage[]>("inbox.pull", { limit: 5 });
     if (messages.length === 0) return 0;
     const { unread } = await daemon.call<{ unread: number }>("inbox.peek");

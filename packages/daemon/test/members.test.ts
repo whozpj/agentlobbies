@@ -151,3 +151,32 @@ describe("deleting lobbies", () => {
     expect(await owner.call("dashboard.lobbies", {})).toHaveLength(1);
   });
 });
+
+describe("presence", () => {
+  it("shows an agent online only while its session is open, and delivers what it missed when it reopens", async () => {
+    const daemon = await startDaemon();
+    const { lobbyId } = await daemon.call("lobby.create", { name: "presence" });
+    const cwd = join(mkdtempSync(join(tmpdir(), "proj-")), "web");
+    mkdirSync(cwd);
+    const first = await daemon.call("session.open", { client: "claude-code", cwd });
+    await daemon.call("lobby.addAgent", { lobbyId, seatKey: first.seatKey, handle: "web-claude" });
+    const person = await daemon.call("session.open", { client: "person", cwd: tmpdir() });
+    const statusOf = async () => {
+      const players: { handle: string; status: string }[] = await daemon.call("lobby.players", { sessionId: person.sessionId, lobbyId });
+      return players.find((p) => p.handle === "web-claude")?.status;
+    };
+    await until(statusOf, (s) => s === "idle");
+
+    // A hook's session alone doesn't keep the agent online.
+    await daemon.call("session.open", { client: "claude-code", cwd, passive: true });
+    await daemon.call("session.close", { sessionId: first.sessionId });
+    expect(await until(statusOf, (s) => s === "offline")).toBe("offline");
+    expect((await daemon.call("agents.list", {})).find((a: { seatKey: string }) => a.seatKey === first.seatKey).online).toBe(false);
+
+    await daemon.call("message.send", { sessionId: person.sessionId, lobbyId, to: "web-claude", type: "question", body: "Are you back?" });
+    const again = await daemon.call("session.open", { client: "claude-code", cwd });
+    await until(statusOf, (s) => s === "idle");
+    const inbox = await until(() => daemon.call("inbox.pull", { sessionId: again.sessionId, limit: 5 }), (m: { body: string }[]) => m.some((x) => x.body === "Are you back?"));
+    expect(inbox.some((m: { body: string }) => m.body === "Are you back?")).toBe(true);
+  });
+});

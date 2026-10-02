@@ -163,7 +163,7 @@ describe("WebSocket", () => {
     expect(await first.closed()).toBe(4009);
   });
 
-  it("shows connected agents as active, to live agents and to newcomers", async () => {
+  it("shows connected agents as online and waiting, to live agents and to newcomers", async () => {
     const host = await createLobby();
     const member = await addAgent(host.lobbyId, "backend", host.account);
     const hostWs = await TestSocket.open(host);
@@ -171,9 +171,9 @@ describe("WebSocket", () => {
 
     const memberWs = await TestSocket.open(member);
     const welcome = await memberWs.hello();
-    expect(welcome.roster.find((a) => a.handle === "host")?.status).toBe("active");
-    expect(welcome.roster.find((a) => a.handle === "backend")?.status).toBe("active");
-    expect((await hostWs.next("roster", (f) => f.agent.handle === "backend")).agent.status).toBe("active");
+    expect(welcome.roster.find((a) => a.handle === "host")?.status).toBe("idle");
+    expect(welcome.roster.find((a) => a.handle === "backend")?.status).toBe("idle");
+    expect((await hostWs.next("roster", (f) => f.agent.handle === "backend")).agent.status).toBe("idle");
   });
 
   it("marks an agent offline once its heartbeats stop, the next time the lobby is active", async () => {

@@ -40,11 +40,13 @@ interface Player {
   owner?: { login: string };
 }
 
-/** "api-codex (codex) · @sam active; owns: api; working on: the ETA endpoint" */
+const STATUS_TEXT: Record<string, string> = { active: "working", busy: "busy", idle: "waiting", offline: "offline" };
+
+/** "api-codex (codex) · @sam working; owns: api; working on: the ETA endpoint" */
 function describePlayer(p: Player): string {
   let line = `${p.handle} (${p.client})`;
   if (p.owner) line += ` · @${p.owner.login}`;
-  line += ` ${p.status}; owns: ${p.owns.join(", ") || "-"}; working on: ${p.workingOn || "-"}`;
+  line += ` ${STATUS_TEXT[p.status] ?? p.status}; owns: ${p.owns.join(", ") || "-"}; working on: ${p.workingOn || "-"}`;
   return line;
 }
 

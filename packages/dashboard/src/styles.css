@@ -123,9 +123,10 @@ p { margin: 0; }
   background: var(--offline);
   flex: none;
 }
-.dot.active { background: var(--answer); box-shadow: 0 0 8px var(--answer); }
-.dot.busy { background: var(--question); animation: blink 1.2s ease-in-out infinite; }
-.dot.idle { background: var(--update); }
+/* working: green and pulsing; waiting for messages: green; busy: blue; offline: grey */
+.dot.active { background: var(--answer); box-shadow: 0 0 8px var(--answer); animation: blink 1.4s ease-in-out infinite; }
+.dot.busy { background: var(--question); }
+.dot.idle { background: var(--answer); }
 
 @keyframes blink { 50% { opacity: 0.35; } }
 
@@ -146,6 +147,17 @@ p { margin: 0; }
 .segmented { display: inline-flex; padding: 3px; gap: 3px; background: var(--bg); border: 1px solid var(--border); border-radius: 9px; margin-bottom: 16px; }
 .segmented button { font: 500 13px var(--sans); color: var(--muted); background: none; border: 0; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
 .segmented button[aria-pressed="true"] { color: var(--text); background: var(--surface-2); }
+
+.picker { display: grid; gap: 6px; max-height: 260px; overflow-y: auto; }
+.picker-row {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 10px 12px;
+  font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 10px; cursor: pointer;
+}
+.picker-row:hover { border-color: var(--muted); }
+.picker-row.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.picker-text { display: grid; min-width: 0; }
+.picker-text .muted { font: 11px var(--mono); }
+.picker-path { margin-left: auto; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; }
 
 .copy { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
 .copy code { flex: 1; overflow-x: auto; white-space: nowrap; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; }
@@ -269,7 +281,8 @@ p { margin: 0; }
 .node-status { stroke: var(--bg); stroke-width: 2; fill: var(--offline); }
 .node.active .node-status { fill: var(--answer); }
 .node.busy .node-status { fill: var(--question); }
-.node.idle .node-status { fill: var(--update); }
+.node.idle .node-status { fill: var(--answer); }
+.node.idle .node-body { stroke: color-mix(in srgb, var(--answer) 40%, var(--border)); }
 .node-ring { fill: none; stroke: var(--accent); stroke-width: 2; animation: speak 1.2s ease-out forwards; }
 
 @keyframes speak { from { opacity: 0.9; r: 28px; } to { opacity: 0; r: 46px; } }

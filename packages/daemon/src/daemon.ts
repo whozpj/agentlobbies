@@ -25,6 +25,8 @@ interface Session {
   client: string;
   cwd: string;
   seatKey: string;
+  /** A hook's session: it doesn't mean the agent is running (a hook can outlive its agent). */
+  passive: boolean;
 }
 
 type Params = Record<string, unknown>;
@@ -120,7 +122,10 @@ export class Daemon extends EventEmitter {
     mkdirSync(this.opts.home, { recursive: true, mode: 0o700 });
     this.db = openDb(join(this.opts.home, "daemon.db"));
     this.running = true;
-    for (const seat of this.db.activeSeats()) this.connect(seat);
+    // People are always in their lobbies; an agent connects while its session runs (see session.open).
+    for (const seat of this.db.activeSeats()) {
+      if (seat.seat_key === PERSON) this.connect(seat);
+    }
     void this.afterSignIn();
   }
 
@@ -190,9 +195,11 @@ export class Daemon extends EventEmitter {
       const cwd = String(p.cwd ?? process.cwd());
       const sessionId = randomUUID();
       const seatKey = seatKeyFor(client, cwd);
-      this.sessions.set(sessionId, { client, cwd, seatKey });
-      if (seatKey !== PERSON) {
+      const passive = p.passive === true;
+      this.sessions.set(sessionId, { client, cwd, seatKey, passive });
+      if (seatKey !== PERSON && !passive) {
         this.db.upsertLocalAgent(seatKey, client, realpathSync(cwd));
+        this.connectAgent(seatKey);
         this.emit("activity", { type: "agents" });
       }
       const seat = this.db.activeSeat(seatKey);
@@ -200,7 +207,15 @@ export class Daemon extends EventEmitter {
     },
 
     "session.close": async (p) => {
+      const session = this.sessions.get(String(p.sessionId));
       this.sessions.delete(String(p.sessionId));
+      if (session && session.seatKey !== PERSON && !this.isRunning(session.seatKey)) {
+        // The agent's session closed, so it goes offline; messages wait on the relay until it's back.
+        for (const seat of this.db.seatsFor(session.seatKey)) {
+          this.connections.get(seat.seat_id)?.stop();
+          this.connections.delete(seat.seat_id);
+        }
+      }
       this.emit("activity", { type: "agents" });
       return {};
     },
@@ -345,14 +360,18 @@ export class Daemon extends EventEmitter {
       const byLobby = Map.groupBy(this.db.activeSeats(), (s) => s.lobby_id);
       return [...byLobby].map(([lobbyId, seats]) => {
         const view = this.viewSeat(seats);
+        const connection = this.connections.get(view.seat_id)?.state ?? "stopped";
+        let roster = this.db.roster(view.seat_id);
+        // Not connected to this lobby: the saved roster is out of date, so don't claim anyone is online.
+        if (connection !== "live") roster = roster.map((a) => ({ ...a, status: "offline" as const }));
         return {
           lobbyId,
           name: seats.find((s) => s.lobby_name)?.lobby_name ?? null,
           myRole: seats.find((s) => s.seat_key === PERSON)?.role ?? null,
           local: seats.filter((s) => s.seat_key !== PERSON).map((s) => ({ handle: s.handle, agentId: s.agent_id, seatKey: s.seat_key })),
-          connection: this.connections.get(view.seat_id)?.state ?? "stopped",
+          connection,
           keyEpoch: this.db.latestLobbyKey(lobbyId)?.epoch ?? 0,
-          roster: this.db.roster(view.seat_id),
+          roster,
         };
       });
     },
@@ -386,7 +405,12 @@ export class Daemon extends EventEmitter {
     "presence.set": async (p) => {
       const seat = this.seat(p);
       const status = (p.status ?? "active") as "active" | "busy" | "idle";
-      this.connections.get(seat.seat_id)?.send({ t: "presence", status, workingOn: String(p.workingOn ?? "") });
+      // Hooks only report working or waiting; keep what the agent said it's working on.
+      let workingOn = p.workingOn;
+      if (workingOn === undefined) {
+        workingOn = this.db.roster(seat.seat_id).find((a) => a.agentId === seat.agent_id)?.workingOn ?? "";
+      }
+      this.connections.get(seat.seat_id)?.send({ t: "presence", status, workingOn: String(workingOn) });
       return {};
     },
   };
@@ -751,8 +775,23 @@ export class Daemon extends EventEmitter {
       handle: s.handle, role: s.role, relay_url: this.opts.relayUrl, jwt: s.token,
     }, Date.now());
     const seat = this.db.activeSeatIn(seatKey, s.lobbyId)!;
-    this.connect(seat);
+    if (seatKey === PERSON || this.isRunning(seatKey)) this.connect(seat);
     return seat;
+  }
+
+  /** True while an agent's own session (its MCP server) is open, not just one of its hooks. */
+  private isRunning(seatKey: string): boolean {
+    for (const session of this.sessions.values()) {
+      if (session.seatKey === seatKey && !session.passive) return true;
+    }
+    return false;
+  }
+
+  /** Connects every lobby seat of an agent that isn't connected yet. */
+  private connectAgent(seatKey: string): void {
+    for (const seat of this.db.seatsFor(seatKey)) {
+      if (!this.connections.has(seat.seat_id)) this.connect(seat);
+    }
   }
 
   /** Signed in: make sure this machine can receive lobby keys, connect to the user object, and sync lobbies. */
@@ -937,13 +976,12 @@ export class Daemon extends EventEmitter {
   }
 
   private localAgents() {
-    const online = new Set([...this.sessions.values()].map((s) => s.seatKey));
     return this.db.localAgents().map((a) => ({
       seatKey: a.seat_key,
       client: a.client,
       folder: basename(a.cwd),
       cwd: a.cwd,
-      online: online.has(a.seat_key),
+      online: this.isRunning(a.seat_key),
       lobbies: this.db.seatsFor(a.seat_key).map((s) => ({ lobbyId: s.lobby_id, name: s.lobby_name, handle: s.handle, agentId: s.agent_id })),
     }));
   }

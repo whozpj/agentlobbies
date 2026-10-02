@@ -265,7 +265,8 @@ export class LobbyDurableObject extends DurableObject<Env> {
 
     att.helloAt = Date.now();
     ws.serializeAttachment(att);
-    this.setStatus(att.agentId, "active");
+    // Online and waiting until the agent says it's working (its hooks report each turn).
+    this.setStatus(att.agentId, "idle");
     const welcome: Extract<ServerFrame, { t: "welcome" }> = {
       t: "welcome",
       agentId: att.agentId,
@@ -331,14 +332,16 @@ export class LobbyDurableObject extends DurableObject<Env> {
     this.broadcastKeys(machines);
   }
 
+  /** Status changes (working, waiting) always apply; changes to only "working on" are throttled. */
   private onPresence(ws: WebSocket, att: SocketAttachment, frame: Extract<ClientFrame, { t: "presence" }>): void {
     const now = Date.now();
-    if (att.lastPresenceAt && now - att.lastPresenceAt < 5_000) return;
+    const agent = getAgent(this.ctx.storage.sql, att.agentId);
+    if (!agent || (agent.status === frame.status && agent.working_on === frame.workingOn)) return;
+    const statusChanged = agent.status !== frame.status;
+    if (!statusChanged && att.lastPresenceAt && now - att.lastPresenceAt < 5_000) return;
     att.lastPresenceAt = now;
     ws.serializeAttachment(att);
 
-    const agent = getAgent(this.ctx.storage.sql, att.agentId);
-    if (!agent || (agent.status === frame.status && agent.working_on === frame.workingOn)) return;
     this.ctx.storage.sql.exec(
       "UPDATE agents SET status = ?, working_on = ?, last_seen_at = ? WHERE agent_id = ?",
       frame.status, frame.workingOn, now, att.agentId,
@@ -433,7 +436,7 @@ export class LobbyDurableObject extends DurableObject<Env> {
       .map((r) => r.topic);
   }
 
-  private setStatus(agentId: string, status: "active" | "offline"): void {
+  private setStatus(agentId: string, status: "idle" | "offline"): void {
     this.ctx.storage.sql.exec("UPDATE agents SET status = ?, last_seen_at = ? WHERE agent_id = ?", status, Date.now(), agentId);
     this.broadcastRoster(agentId);
   }

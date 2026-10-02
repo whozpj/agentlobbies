@@ -81,17 +81,44 @@ export interface Session {
 }
 
 /**
- * A daemon session for one client in one folder. If the daemon goes away, the next call starts
- * it again and reopens the session, so long-running MCP servers survive daemon restarts.
+ * A daemon session for one client in one folder. If the daemon goes away (an upgrade restarts it),
+ * the session reopens at once, starting the daemon again, so a running agent stays online.
+ * `passive` marks a hook's session, which doesn't count as the agent running.
  */
-export async function openSession(opts: { client: string; cwd: string; home?: string }): Promise<Session> {
+export async function openSession(opts: { client: string; cwd: string; home?: string; passive?: boolean }): Promise<Session> {
   let daemon: RpcClient;
   let sessionId: string;
+  let closed = false;
+  let reconnecting: Promise<void> | undefined;
 
   async function connect() {
     daemon = await connectToDaemon(opts.home);
-    ({ sessionId } = await daemon.call("session.open", { client: opts.client, cwd: opts.cwd }));
+    ({ sessionId } = await daemon.call("session.open", { client: opts.client, cwd: opts.cwd, passive: opts.passive ?? false }));
+    daemon.onClose(() => {
+      if (!closed) void reconnect();
+    });
   }
+
+  /** Keeps trying until the daemon is back. Concurrent callers share one attempt. */
+  function reconnect(): Promise<void> {
+    if (!reconnecting) {
+      reconnecting = (async () => {
+        while (!closed) {
+          try {
+            await connect();
+            return;
+          } catch {
+            await sleep(1_000);
+          }
+        }
+      })();
+      reconnecting.finally(() => {
+        reconnecting = undefined;
+      });
+    }
+    return reconnecting;
+  }
+
   await connect();
 
   return {
@@ -100,10 +127,13 @@ export async function openSession(opts: { client: string; cwd: string; home?: st
         return await daemon.call(method, { sessionId, ...params });
       } catch (e) {
         if (!(e instanceof DaemonError && e.code === "daemon_unavailable")) throw e;
-        await connect();
+        await reconnect();
         return daemon.call(method, { sessionId, ...params });
       }
     },
-    close: () => daemon.close(),
+    close: () => {
+      closed = true;
+      daemon.close();
+    },
   };
 }

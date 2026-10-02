@@ -38,7 +38,7 @@ describe("two machines, two agents", () => {
     const api = await server.agent("codex");
     await server.addAgent(lobbyId, api, "api-codex", ["api"]);
 
-    expect(await web.until("lobby_players", "api-codex (codex) · @server-owner active")).toContain("owns: api");
+    expect(await web.until("lobby_players", "api-codex (codex) · @server-owner waiting")).toContain("owns: api");
     expect(await web.tool("lobby_ask", { to: "owner:api", question: "What field holds the delivery ETA?" })).toContain("Sent question");
 
     const question = await api.until("lobby_status", "delivery ETA");

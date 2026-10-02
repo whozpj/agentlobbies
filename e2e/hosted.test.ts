@@ -54,7 +54,9 @@ describe("the hosted dashboard", () => {
 
     // Add the laptop's agent from the browser: the relay asks the laptop's daemon to do it.
     await page.getByRole("button", { name: "Add agent" }).click();
-    await pwExpect(page.getByRole("dialog").locator("select")).toContainText("web · claude-code · on");
+    const choice = page.getByRole("dialog").getByRole("radio", { name: /web/ });
+    await pwExpect(choice).toContainText("claude-code · ");
+    await pwExpect(choice).toHaveAttribute("aria-checked", "true");
     await page.getByPlaceholder("api, auth").fill("web");
     await page.getByRole("dialog").getByRole("button", { name: "Add" }).click();
     await pwExpect(page.getByTestId("owner-web-claude")).toHaveText("@whozpj");

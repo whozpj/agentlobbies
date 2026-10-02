@@ -41,13 +41,31 @@ function InviteModal({ lobby, onClose }: { lobby: Lobby; onClose: () => void }) 
 /** Machine and seat together name an agent; the same folder on two machines is two agents. */
 const agentKey = (a: MyAgent) => `${a.machineId ?? "local"}/${a.seatKey}`;
 
-function agentLabel(a: MyAgent): string {
-  const where = a.machine ? ` · on ${a.machine}` : "";
-  return `${a.folder} · ${a.client}${where}${a.online ? "" : " (not running)"}`;
+/** What an agent is doing, in words: agents report working and waiting through their hooks. */
+export const STATUS_LABEL: Record<string, string> = { active: "working", busy: "busy", idle: "waiting for messages", offline: "offline" };
+
+/** A list to pick one running agent from. */
+function AgentPicker({ agents, selected, onSelect }: { agents: MyAgent[]; selected: string; onSelect: (key: string) => void }) {
+  return (
+    <div className="picker" role="radiogroup" aria-label="Agent">
+      {agents.map((a) => (
+        <button key={agentKey(a)} type="button" role="radio" aria-checked={selected === agentKey(a)}
+          className={selected === agentKey(a) ? "picker-row selected" : "picker-row"} onClick={() => onSelect(agentKey(a))}>
+          <StatusDot status="active" />
+          <span className="picker-text">
+            <b>{a.folder}</b>
+            <span className="muted">{a.client}{a.machine ? ` · ${a.machine}` : ""}</span>
+          </span>
+          {a.cwd && <code className="muted picker-path">{a.cwd}</code>}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 function AddAgentModal({ lobby, agents, onClose }: { lobby: Lobby; agents: MyAgent[]; onClose: () => void }) {
-  const available = agents.filter((a) => !a.lobbies.some((l) => l.lobbyId === lobby.lobbyId));
+  // Only agents whose sessions are running right now, and that aren't in this lobby yet.
+  const available = agents.filter((a) => a.online && !a.lobbies.some((l) => l.lobbyId === lobby.lobbyId));
   const [key, setKey] = useState(available[0] ? agentKey(available[0]) : "");
   const [owns, setOwns] = useState("");
   const [error, setError] = useState("");
@@ -65,17 +83,15 @@ function AddAgentModal({ lobby, agents, onClose }: { lobby: Lobby; agents: MyAge
   return (
     <Modal title="Add an agent" onClose={onClose}
       footer={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn primary" disabled={!key} onClick={add}>Add</button></>}>
-      <label className="field">
+      <div className="field">
         <span>Agent</span>
         {available.length
-          ? <select value={key} onChange={(e) => setKey(e.target.value)}>
-              {available.map((a) => <option key={agentKey(a)} value={agentKey(a)}>{agentLabel(a)}</option>)}
-            </select>
+          ? <AgentPicker agents={available} selected={key} onSelect={setKey} />
           : <div className="muted">
-              <p>No agents to add. Start Claude Code or Codex in a project folder{isHosted ? " on a machine with the app installed:" : " first."}</p>
+              <p>No running agents to add. Start Claude Code or Codex in a project folder{isHosted ? " on a machine with the app installed:" : "; it shows up here."}</p>
               {isHosted && <InstallSteps />}
             </div>}
-      </label>
+      </div>
       <label className="field">
         <span>Owns <i className="muted">optional</i></span>
         <input value={owns} placeholder="api, auth" onChange={(e) => setOwns(e.target.value)} />
@@ -204,7 +220,7 @@ function AgentCard({ agent, selected, onSelect, onEdit, onRemove }: AgentCardPro
         <span>{agent.client}</span>
       </div>
       {agent.owns.length > 0 && <div className="tags">{agent.owns.map((o) => <span key={o} className="tag">{o}</span>)}</div>}
-      <p className="working muted">{agent.workingOn || agent.status}</p>
+      <p className="working muted">{agent.status !== "offline" && agent.workingOn ? agent.workingOn : STATUS_LABEL[agent.status]}</p>
     </article>
   );
 }

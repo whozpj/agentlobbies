@@ -151,6 +151,11 @@ export class RpcClient {
     });
   }
 
+  /** Called once when the connection to the daemon closes, e.g. because the daemon restarted. */
+  onClose(handler: () => void): void {
+    this.socket.on("close", handler);
+  }
+
   onNotification(handler: (n: { method: string; params: unknown }) => void): void {
     this.notificationHandlers.push(handler);
   }
