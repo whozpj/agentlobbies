@@ -342,3 +342,80 @@ describe("the browser as a device (LLD 15.11)", () => {
     expect(res.status).toBe(403);
   });
 });
+
+describe("devices", () => {
+  it("lists a user's machines and browsers, and revoking one stops it and changes the lobby key", async () => {
+    const laptop = await signIn("devices-user");
+    const lobby = await createLobby("devices-user", laptop);
+    const socket = await TestSocket.open(lobby, laptop);
+    await socket.hello();
+    socket.send({ t: "keys.put", reqId: ulid(), epoch: 1, create: true, sealed: [{ machineId: laptop.machineId, sealed: "c2VhbGVk" }] });
+    await socket.next("keys", (f) => f.current === 1);
+    const oldLaptop = await signIn("devices-user");
+    const cookie = await webSignIn("devices-user");
+    await web("/v1/me/devices", cookie, { method: "POST", body: { boxPublicKey: "YnJvd3Nlcg", name: "Web browser (MacIntel)" } });
+
+    const listed = await (await api("/v1/me/devices", { headers: { authorization: `Bearer ${laptop.token}` } }))
+      .json<{ deviceId: string; kind: string; current: boolean; name: string }[]>();
+    expect(listed.map((d) => d.kind).sort()).toEqual(["browser", "machine", "machine"]);
+    expect(listed.find((d) => d.current)?.deviceId).toBe(laptop.machineId);
+
+    expect((await web(`/v1/me/devices/${oldLaptop.machineId}`, cookie, { method: "DELETE" })).status).toBe(200);
+    expect((await socket.next("keys", (f) => f.rotate)).machines.map((m) => m.machineId)).not.toContain(oldLaptop.machineId);
+    expect((await api("/v1/me", { headers: { authorization: `Bearer ${oldLaptop.token}` } })).status).toBe(401);
+    const after = await (await web("/v1/me/devices", cookie)).json<{ deviceId: string }[]>();
+    expect(after.map((d) => d.deviceId)).not.toContain(oldLaptop.machineId);
+  });
+
+  it("won't revoke someone else's device", async () => {
+    const mine = await signIn("devices-mine");
+    const cookie = await webSignIn("devices-other");
+    await web(`/v1/me/devices/${mine.machineId}`, cookie, { method: "DELETE" });
+    expect((await api("/v1/me", { headers: { authorization: `Bearer ${mine.token}` } })).status).toBe(200);
+  });
+});
+
+describe("your data", () => {
+  it("exports what the relay keeps about you, with no message content", async () => {
+    const machine = await signIn("exporter");
+    const lobby = await createLobby("exporter", machine);
+    const res = await api("/v1/me/export", { headers: { authorization: `Bearer ${machine.token}` } });
+    expect(res.headers.get("content-disposition")).toContain("agentlobbies-account.json");
+    const data = await res.json<{ user: { login: string }; devices: unknown[]; lobbies: { lobby_id: string; role: string }[] }>();
+    expect(data.user.login).toBe("exporter");
+    expect(data.devices).toHaveLength(1);
+    expect(data.lobbies).toEqual([expect.objectContaining({ lobby_id: lobby.lobbyId, role: "owner" })]);
+  });
+
+  it("deletes an account: owned lobbies close for everyone, other lobbies drop the person and change keys", async () => {
+    const leaver = await signIn("account-leaver");
+    const owned = await createLobby("account-leaver", leaver);
+    const other = await createLobby("someone-else");
+    const otherSocket = await TestSocket.open(other, other.account);
+    await otherSocket.hello();
+    otherSocket.send({ t: "keys.put", reqId: ulid(), epoch: 1, create: true, sealed: [{ machineId: other.account.machineId, sealed: "c2VhbGVk" }] });
+    await otherSocket.next("keys", (f) => f.current === 1);
+    const { token } = await createInvite(other);
+    await api("/v1/invites/accept", { method: "POST", headers: { authorization: `Bearer ${leaver.token}`, "content-type": "application/json" }, body: JSON.stringify({ token }) });
+    const ownedSocket = await TestSocket.open(owned, leaver);
+    await ownedSocket.hello();
+
+    const cookie = await webSignIn("account-leaver");
+    const res = await web("/v1/me", cookie, { method: "DELETE" });
+    expect(res.status).toBe(204);
+    expect(res.headers.get("set-cookie")).toContain("Max-Age=0");
+    expect(await ownedSocket.closed()).toBe(4010);
+    expect((await otherSocket.next("keys", (f) => f.rotate)).machines.map((m) => m.machineId)).toEqual([other.account.machineId]);
+    expect((await api("/v1/me", { headers: { authorization: `Bearer ${leaver.token}` } })).status).toBe(401);
+  });
+
+  it("caps how many devices an account adds in a day", async () => {
+    const cookie = await webSignIn("device-spammer");
+    const statuses: number[] = [];
+    for (let i = 0; i < 21; i++) {
+      statuses.push((await web("/v1/me/devices", cookie, { method: "POST", body: { boxPublicKey: "YnJvd3Nlcg", name: `b${i}` } })).status);
+    }
+    expect(statuses.slice(0, 20).every((s) => s === 201)).toBe(true);
+    expect(statuses[20]).toBe(429);
+  });
+});

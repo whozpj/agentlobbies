@@ -1,4 +1,4 @@
-import { decryptContent, ensureDevice, forgetDevice, openLobbyKey, type Device, type Sealed } from "./crypto";
+import { decryptContent, ensureDevice, forgetDevice, openLobbyKey, type Device as BrowserDevice, type Sealed } from "./crypto";
 
 export interface Agent {
   agentId: string;
@@ -53,6 +53,15 @@ export interface Message {
 export interface AgentChanges {
   handle: string;
   owns: string[];
+}
+
+/** A machine or browser signed in to the account, which receives its lobby keys. */
+export interface Device {
+  deviceId: string;
+  name: string;
+  kind: "machine" | "browser";
+  createdAt: number;
+  current: boolean;
 }
 
 export interface InvitePreview {
@@ -113,6 +122,10 @@ const local = {
   removeMember: (lobbyId: string, login: string) => send("DELETE", `/api/lobbies/${lobbyId}/members/${login}`),
   deleteLobby: (lobbyId: string) => send("DELETE", `/api/lobbies/${lobbyId}`),
   forgetLobby: (lobbyId: string) => send("POST", `/api/lobbies/${lobbyId}/forget`),
+  devices: () => request<Device[]>("/api/devices"),
+  revokeDevice: (deviceId: string) => send("DELETE", `/api/devices/${deviceId}`),
+  exportAccount: () => request<unknown>("/api/account/export"),
+  deleteAccount: () => send("DELETE", "/api/account"),
 };
 
 interface RelayLobby {
@@ -138,7 +151,7 @@ interface SealedMessage extends Omit<Message, "body"> {
 }
 
 /** This browser as one of the signed-in user's devices, set up once they've signed in (LLD 15.11). */
-let device: Promise<Device> | undefined;
+let device: Promise<BrowserDevice> | undefined;
 const lobbyKeys = new Map<string, CryptoKey>(); // "<lobbyId>/<epoch>"
 
 function useDevice(me: Me): void {
@@ -208,6 +221,21 @@ const relay = {
   removeAgent: (lobbyId: string, agentId: string) => send("DELETE", `/v1/lobbies/${lobbyId}/agents/${agentId}`),
   removeMember: (lobbyId: string, login: string) => send("DELETE", `/v1/lobbies/${lobbyId}/members/${login}`),
   deleteLobby: (lobbyId: string) => send("DELETE", `/v1/lobbies/${lobbyId}`),
+  /** This browser is one of the devices; the relay can't tell which, so mark it here. */
+  async devices(): Promise<Device[]> {
+    const devices = await request<Device[]>("/v1/me/devices");
+    const mine = device ? (await device).machineId : undefined;
+    return devices.map((d) => ({ ...d, current: d.current || d.deviceId === mine }));
+  },
+  async revokeDevice(deviceId: string) {
+    await send("DELETE", `/v1/me/devices/${deviceId}`);
+    if (device && (await device).machineId === deviceId) await forgetDevice((await device).userId);
+  },
+  exportAccount: () => request<unknown>("/v1/me/export"),
+  async deleteAccount() {
+    await send("DELETE", "/v1/me");
+    if (device) await forgetDevice((await device).userId);
+  },
   // The web only lists lobbies you belong to, so there is nothing to forget there.
   forgetLobby: async (_lobbyId: string) => {},
 };

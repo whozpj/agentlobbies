@@ -179,9 +179,28 @@ export class Daemon extends EventEmitter {
           // Signing out on this machine still works when the relay can't be reached.
         }
       }
-      this.userLink?.stop();
-      this.userLink = undefined;
-      this.db.clearAccount();
+      this.signOutLocally();
+      return {};
+    },
+
+    "devices.list": async () => this.relay("/v1/me/devices", undefined, await this.accountToken(), "GET"),
+
+    /** Revokes one of your devices; revoking this machine signs it out. */
+    "devices.revoke": async (p) => {
+      const deviceId = String(p.deviceId ?? "");
+      const account = this.requireAccount();
+      await this.relay(`/v1/me/devices/${deviceId}`, undefined, await this.accountToken(), "DELETE");
+      if (deviceId === account.machine_id) this.signOutLocally();
+      return {};
+    },
+
+    "account.export": async () => this.relay("/v1/me/export", undefined, await this.accountToken(), "GET"),
+
+    /** Deletes your account everywhere, then everything this machine kept for it. */
+    "account.delete": async () => {
+      await this.relay("/v1/me", undefined, await this.accountToken(), "DELETE");
+      for (const seat of this.db.activeSeats()) this.forgetLobby(seat.lobby_id);
+      this.signOutLocally();
       return {};
     },
 
@@ -794,6 +813,13 @@ export class Daemon extends EventEmitter {
     }
   }
 
+  private signOutLocally(): void {
+    this.userLink?.stop();
+    this.userLink = undefined;
+    this.db.clearAccount();
+    this.emit("activity", { type: "lobbies" });
+  }
+
   /** Signed in: make sure this machine can receive lobby keys, connect to the user object, and sync lobbies. */
   private async afterSignIn(): Promise<void> {
     if (!this.db.account()) return;
@@ -811,6 +837,7 @@ export class Daemon extends EventEmitter {
         if (!WEB_METHODS.has(method)) throw new DaemonError("forbidden", `${method} can't be called from the web`);
         return this.call(method, params);
       },
+      onRevoked: () => this.signOutLocally(),
       onLobbiesChanged: () => {
         this.syncMemberships().catch(() => {
           // The next change, or the next start, syncs again.
@@ -1011,7 +1038,8 @@ export class Daemon extends EventEmitter {
     const init: RequestInit = { method, headers };
     if (body !== undefined) init.body = JSON.stringify(body);
     const res = await fetch(this.opts.relayUrl + path, init);
-    const json = (await res.json()) as T & { error?: { code: string; message: string } };
+    const text = await res.text();
+    const json = (text ? JSON.parse(text) : {}) as T & { error?: { code: string; message: string } };
     if (!res.ok) throw new DaemonError(json.error?.code ?? "relay_error", json.error?.message ?? `relay returned ${res.status}`);
     return json;
   }

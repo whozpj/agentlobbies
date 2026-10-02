@@ -331,6 +331,16 @@ p { margin: 0; }
 
 @keyframes enter { from { opacity: 0; transform: translateY(-6px); } }
 
+/* Account and legal pages */
+
+.section { margin-bottom: 28px; display: grid; gap: 10px; justify-items: start; }
+.section .table { margin-top: 4px; }
+.section h2 { margin-bottom: 2px; }
+.legal { max-width: 720px; }
+.legal h2 { margin-top: 24px; }
+.legal p, .legal li { line-height: 1.6; }
+.legal a, .muted a { text-decoration: underline; }
+
 /* Hosted pages: sign-in and invites */
 
 .welcome { flex: 1; display: grid; place-items: center; padding: 32px 16px; min-height: 100vh; background-image: radial-gradient(var(--grid) 1px, transparent 1px); background-size: 22px 22px; }

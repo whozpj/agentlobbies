@@ -144,6 +144,7 @@ describe("dashboard server", () => {
     const page = await fetch(new URL("/lobbies/abc", base));
     expect(await page.text()).toContain("dashboard");
     expect(page.headers.get("cache-control")).toBe("no-cache");
+    expect(page.headers.get("content-security-policy")).toContain("script-src 'self'");
     expect((await get(base, "/../../etc/passwd")).body).not.toContain("root:");
   });
 });

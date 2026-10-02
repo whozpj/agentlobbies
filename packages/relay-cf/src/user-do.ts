@@ -128,6 +128,26 @@ export class UserDurableObject extends DurableObject<Env> {
     });
   }
 
+  /** A device was revoked: tell that machine, so it signs itself out, and disconnect it. */
+  async revokeMachine(machineId: string): Promise<void> {
+    for (const ws of this.ctx.getWebSockets(machineId)) {
+      try {
+        ws.send(JSON.stringify({ t: "revoked" }));
+      } catch {
+        // Already closing.
+      }
+      ws.close(4003, "device revoked");
+    }
+    this.ctx.storage.sql.exec("DELETE FROM machine_agents WHERE machine_id = ?", machineId);
+    this.pushMachines();
+  }
+
+  /** The account was deleted: disconnect everyone and erase what this object kept. */
+  async forget(): Promise<void> {
+    for (const ws of this.ctx.getWebSockets()) ws.close(4003, "account deleted");
+    await this.ctx.storage.deleteAll();
+  }
+
   /** Tells every daemon and browser tab of this user that something changed, e.g. `{ t: "lobbies" }`. */
   async notify(message: { t: string }): Promise<void> {
     const frame = JSON.stringify(message);

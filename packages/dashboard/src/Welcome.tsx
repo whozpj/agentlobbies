@@ -16,6 +16,7 @@ export function SignInPage() {
         <a className="btn primary big" href={signInUrl(location.pathname + location.hash)}>Sign in with GitHub</a>
         {failed && <p className="error">Sign-in didn't finish. Try again.</p>}
         <p className="muted small"><LockIcon /> Messages are end-to-end encrypted. Your browser decrypts them; the server never can.</p>
+        <p className="muted small"><a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></p>
       </div>
     </div>
   );

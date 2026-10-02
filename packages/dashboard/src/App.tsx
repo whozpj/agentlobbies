@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
+import { AccountPage } from "./AccountPage";
 import { AgentsPage } from "./AgentsPage";
+import { LegalPage } from "./LegalPage";
 import { api, isHosted, lobbyName, type Lobby, type Me, type MyAgent } from "./api";
 import { LobbiesPage } from "./LobbiesPage";
 import { LobbyPage } from "./LobbyPage";
@@ -57,6 +59,10 @@ export function App() {
     });
   }, [me]);
 
+  // Pages anyone can read, signed in or not.
+  const legal = location.pathname.match(/^\/(privacy|terms)$/)?.[1] ?? route.match(/^\/(privacy|terms)$/)?.[1];
+  if (legal) return <LegalPage page={legal as "privacy" | "terms"} />;
+
   // The hosted dashboard's own pages: invite links, and sign-in.
   const invite = location.pathname.match(/^\/invite\/([\w-]+)$/)?.[1];
   if (isHosted && invite) return me === undefined ? null : <InvitePage invite={invite} me={me} />;
@@ -79,10 +85,11 @@ export function App() {
           </>
         )}
         <nav className="nav">
-          <a href="#/" className={!lobby && route !== "/agents" ? "active" : ""}>Lobbies</a>
+          <a href="#/" className={!lobby && route === "/" ? "active" : ""}>Lobbies</a>
           <a href="#/agents" className={route === "/agents" ? "active" : ""}>
             My agents <span className="count" data-testid="agent-count">{online}</span>
           </a>
+          <a href="#/account" className={route === "/account" ? "active" : ""}>Account</a>
         </nav>
         <div className="topbar-right">
           <button className="icon-btn" aria-label={theme === "dark" ? "Light mode" : "Dark mode"} onClick={toggleTheme}>
@@ -98,6 +105,7 @@ export function App() {
       <main className="main">
         {lobby ? <LobbyPage lobby={lobby} me={me ?? null} agents={agents} onChange={refresh} />
           : route === "/agents" ? <AgentsPage agents={agents} />
+          : route === "/account" ? <AccountPage me={me ?? null} />
           : <LobbiesPage lobbies={lobbies} onChange={refresh} />}
       </main>
     </div>

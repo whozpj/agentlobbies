@@ -8,6 +8,8 @@ export interface UserLinkOptions {
   /** A request from the hosted dashboard, e.g. adding an agent to a lobby. */
   onCall: (method: string, params: Record<string, unknown>) => Promise<unknown>;
   onLobbiesChanged: () => void;
+  /** This machine was revoked from the user's account (from a dashboard). */
+  onRevoked: () => void;
 }
 
 interface Incoming {
@@ -79,6 +81,11 @@ export class UserLink {
 
     if (message.t === "lobbies") {
       this.opts.onLobbiesChanged();
+      return;
+    }
+    if (message.t === "revoked") {
+      this.stop();
+      this.opts.onRevoked();
       return;
     }
     if (message.t !== "call" || !message.id) return;

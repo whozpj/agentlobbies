@@ -5,6 +5,13 @@ import type { AddressInfo } from "node:net";
 import { extname, join, resolve, sep } from "node:path";
 import { DaemonError } from "./rpc";
 
+// The same policy as the hosted dashboard's _headers file: no scripts but the app's own.
+const SECURITY_HEADERS: Record<string, string> = {
+  "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://avatars.githubusercontent.com; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "no-referrer",
+};
+
 const CONTENT_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -73,6 +80,10 @@ async function handleApi(source: DashboardSource, req: IncomingMessage, res: Ser
   if (route === "GET /api/lobbies") return reply("dashboard.lobbies");
   if (route === "POST /api/lobbies") return reply("lobby.create", await body());
   if (route === "GET /api/agents") return reply("agents.list");
+  if (route === "GET /api/devices") return reply("devices.list");
+  if (req.method === "DELETE" && url.pathname.startsWith("/api/devices/")) return reply("devices.revoke", { deviceId: url.pathname.split("/").pop() });
+  if (route === "GET /api/account/export") return reply("account.export");
+  if (route === "DELETE /api/account") return reply("account.delete");
   if (route === "POST /api/invites/accept") return reply("invite.accept", await body());
   if (route === "GET /api/events") return streamActivity(source, req, res);
   if (lobby && route === `GET /api/lobbies/${lobby}/messages`) return reply("dashboard.messages", { lobbyId: lobby });
@@ -104,7 +115,7 @@ function serveStatic(res: ServerResponse, staticDir: string | undefined, pathnam
   const requested = resolve(root, `.${decodeURIComponent(pathname)}`);
   const inside = requested.startsWith(root + sep);
   const file = inside && existsSync(requested) && statSync(requested).isFile() ? requested : join(root, "index.html");
-  const headers: Record<string, string> = { "content-type": CONTENT_TYPES[extname(file)] ?? "application/octet-stream" };
+  const headers: Record<string, string> = { ...SECURITY_HEADERS, "content-type": CONTENT_TYPES[extname(file)] ?? "application/octet-stream" };
   // index.html names this version's asset files, so browsers must re-check it after an upgrade.
   if (file.endsWith("index.html")) headers["cache-control"] = "no-cache";
   res.writeHead(200, headers);

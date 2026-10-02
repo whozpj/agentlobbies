@@ -1,0 +1,7 @@
+# Security headers for the hosted dashboard (Cloudflare applies this file to the static assets).
+# The page decrypts messages with a key in the browser, so it allows no scripts but its own.
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://avatars.githubusercontent.com; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  Permissions-Policy: camera=(), microphone=(), geolocation=()

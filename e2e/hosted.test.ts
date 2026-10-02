@@ -21,9 +21,19 @@ afterAll(async () => {
 });
 
 /** A fresh browser, with no session, at a desktop size. */
+/** Anything the Content-Security-Policy blocked on any page in these tests. */
+const cspViolations: string[] = [];
+
+function watchCsp(page: Page): Page {
+  page.on("console", (message) => {
+    if (message.text().includes("Content Security Policy")) cspViolations.push(message.text());
+  });
+  return page;
+}
+
 async function newBrowserPage(): Promise<Page> {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-  return context.newPage();
+  return watchCsp(await context.newPage());
 }
 
 /** Clicks "Sign in with GitHub" as `githubUser`: the fake GitHub approves whoever it is told is signed in. */
@@ -133,7 +143,7 @@ describe("the hosted dashboard", () => {
 /** A browser signed in to the hosted dashboard as the same GitHub user as `machine`. */
 async function signedIn(machine: Machine, viewport = { width: 1440, height: 900 }): Promise<Page> {
   const context = await browser.newContext({ viewport });
-  const page = await context.newPage();
+  const page = watchCsp(await context.newPage());
   await page.goto(publicUrl);
   await signIn(page, machine.githubUser);
   await pwExpect(page.getByRole("heading", { name: "Lobbies" })).toBeVisible();
@@ -300,5 +310,56 @@ describe("deleting a lobby", () => {
     await pwExpect(page.getByText("No lobbies yet")).toBeVisible();
     await until(async () => (await guest.rpc<unknown[]>("dashboard.lobbies")).length === 0, "the guest's machine to drop the lobby");
     await until(async () => (await owner.rpc<unknown[]>("dashboard.lobbies")).length === 0, "the owner's machine to drop the lobby");
+  });
+});
+
+describe("account", () => {
+  it("lists devices, revokes a machine, downloads your data, and deletes the account", async () => {
+    const laptop = new Machine();
+    await laptop.login("accounty");
+    await laptop.createLobby("mine");
+    const page = await signedIn(laptop);
+    await page.getByRole("link", { name: "Account", exact: true }).click();
+
+    // This browser and the laptop are both devices.
+    await pwExpect(page.getByRole("row").filter({ hasText: "this device" })).toContainText("browser");
+    const laptopRow = page.getByRole("row").filter({ hasText: "machine" });
+    await pwExpect(laptopRow).toBeVisible();
+
+    const download = page.waitForEvent("download");
+    await page.getByRole("button", { name: "Download your data" }).click();
+    const file = await download;
+    expect(file.suggestedFilename()).toBe("agentlobbies-account.json");
+
+    await laptopRow.getByRole("button", { name: /Revoke/ }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Revoke" }).click();
+    await pwExpect(page.getByRole("row").filter({ hasText: "machine" })).toHaveCount(0);
+    await until(async () => (await laptop.rpc("account.status")) === null, "the laptop to sign itself out");
+
+    await page.getByRole("button", { name: "Delete account…" }).click();
+    const confirm = page.getByRole("dialog").getByRole("button", { name: "Delete account" });
+    await pwExpect(confirm).toBeDisabled();
+    await page.getByRole("dialog").locator("input").fill("accounty");
+    await confirm.click();
+    await pwExpect(page.getByRole("link", { name: "Sign in with GitHub" })).toBeVisible();
+  });
+
+  it("shows the privacy policy and terms without signing in", async () => {
+    const page = await newBrowserPage();
+    await page.goto(`${publicUrl}/privacy`);
+    await pwExpect(page.getByRole("heading", { name: "Privacy" })).toBeVisible();
+    await pwExpect(page.getByText("We can't read your messages")).toBeVisible();
+    await page.goto(`${publicUrl}/terms`);
+    await pwExpect(page.getByRole("heading", { name: "Acceptable use" })).toBeVisible();
+  });
+});
+
+describe("security headers", () => {
+  it("serves the site with a strict Content-Security-Policy that nothing in these tests tripped", async () => {
+    const res = await fetch(publicUrl);
+    expect(res.headers.get("content-security-policy")).toContain("script-src 'self'");
+    expect(res.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(cspViolations).toEqual([]);
   });
 });

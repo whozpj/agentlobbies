@@ -1,0 +1,29 @@
+# Publishes the CLI to npm when a version tag (v1.2.3) is pushed, with provenance: npm shows which
+# commit and workflow built each release. Uses npm trusted publishing, so no npm token is stored here.
+name: Publish to npm
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write # lets npm verify this workflow (trusted publishing and provenance)
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: corepack enable pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Check the tag matches the package version
+        run: test "v$(node -p "require('./packages/cli/package.json').version")" = "$GITHUB_REF_NAME"
+      - run: pnpm turbo run build --filter=agentlobbies...
+      - run: pnpm --filter agentlobbies pack --pack-destination "$RUNNER_TEMP"
+      - run: npm install -g npm@latest
+      - run: npm publish "$RUNNER_TEMP"/agentlobbies-*.tgz --access public --provenance

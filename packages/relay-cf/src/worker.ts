@@ -34,6 +34,10 @@ const BoxKeyBody = z.object({ boxPublicKey: B64u });
 const DeviceBody = z.object({ boxPublicKey: B64u, name: z.string().max(100) });
 
 type MemberRole = "owner" | "member" | "viewer";
+
+/** Per-account caps on top of the per-IP ones, so one account can't fill the relay. */
+const ACCOUNT_LIMITS = { lobbiesPerDay: 50, invitesPerDay: 200, devicesPerDay: 20 };
+const DAY_MS = 24 * 60 * 60_000;
 type Params = Record<string, string | undefined>;
 type Handler = (req: Request, env: Env, params: Params) => Promise<Response>;
 
@@ -54,8 +58,11 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
   ["POST", new URLPattern({ pathname: "/auth/logout" }), webLogout],
   ["GET", new URLPattern({ pathname: "/v1/me" }), me],
   ["GET", new URLPattern({ pathname: "/v1/me/agents" }), myAgents],
+  ["GET", new URLPattern({ pathname: "/v1/me/devices" }), listDevices],
+  ["GET", new URLPattern({ pathname: "/v1/me/export" }), exportAccount],
+  ["DELETE", new URLPattern({ pathname: "/v1/me" }), deleteAccount],
   ["POST", new URLPattern({ pathname: "/v1/me/devices" }), addBrowserDevice],
-  ["DELETE", new URLPattern({ pathname: "/v1/me/devices/:machineId" }), removeBrowserDevice],
+  ["DELETE", new URLPattern({ pathname: "/v1/me/devices/:machineId" }), removeDevice],
   ["GET", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/keys" }), browserKeys],
   ["GET", new URLPattern({ pathname: "/v1/me/ws" }), machineSocket],
   ["GET", new URLPattern({ pathname: "/v1/me/live" }), browserSocket],
@@ -148,6 +155,7 @@ async function registerBoxKey(req: Request, env: Env): Promise<Response> {
 async function addBrowserDevice(req: Request, env: Env): Promise<Response> {
   const account = await requireAccount(req, env);
   if (account.machineId) throw new ProtocolError("forbidden", "only a browser registers this way");
+  await limitPerDay(env, "SELECT COUNT(*) AS n FROM machines WHERE user_id = ? AND created_at > ?", account.userId, ACCOUNT_LIMITS.devicesPerDay, "devices");
   const { boxPublicKey, name } = await parseBody(req, DeviceBody);
   const machineId = ulid();
   await env.DB.prepare("INSERT INTO machines (machine_id, user_id, public_key, box_public_key, name, created_at) VALUES (?, ?, '', ?, ?, ?)")
@@ -156,12 +164,33 @@ async function addBrowserDevice(req: Request, env: Env): Promise<Response> {
   return Response.json({ machineId }, { status: 201 });
 }
 
-/** Signing out of a browser: it can't receive keys any more, and its lobbies make new keys without it. */
-async function removeBrowserDevice(req: Request, env: Env, params: Params): Promise<Response> {
+/** Every machine and browser the user is signed in on: the devices that receive their lobby keys. */
+async function listDevices(req: Request, env: Env): Promise<Response> {
   const account = await requireAccount(req, env);
-  const result = await env.DB.prepare("UPDATE machines SET revoked_at = ? WHERE machine_id = ? AND user_id = ? AND public_key = '' AND revoked_at IS NULL")
+  const { results } = await env.DB.prepare(
+    "SELECT machine_id, name, public_key, created_at FROM machines WHERE user_id = ? AND revoked_at IS NULL ORDER BY created_at DESC",
+  ).bind(account.userId).all<{ machine_id: string; name: string; public_key: string; created_at: number }>();
+  return Response.json(results.map((d) => ({
+    deviceId: d.machine_id,
+    name: d.name,
+    kind: d.public_key === "" ? "browser" : "machine", // a browser has no signing key
+    createdAt: d.created_at,
+    current: d.machine_id === account.machineId,
+  })));
+}
+
+/**
+ * Revokes one of the user's devices (a lost laptop, an old browser, or signing out of one): it can't
+ * sign in or receive keys any more, and its lobbies make new keys without it.
+ */
+async function removeDevice(req: Request, env: Env, params: Params): Promise<Response> {
+  const account = await requireAccount(req, env);
+  const result = await env.DB.prepare("UPDATE machines SET revoked_at = ? WHERE machine_id = ? AND user_id = ? AND revoked_at IS NULL")
     .bind(Date.now(), params.machineId, account.userId).run();
-  if (result.meta.changes > 0) await forEachLobbyOf(env, account.userId, (lobby) => lobby.rotateKeys());
+  if (result.meta.changes > 0) {
+    await userStub(env, account.userId).revokeMachine(params.machineId!);
+    await forEachLobbyOf(env, account.userId, (lobby) => lobby.rotateKeys());
+  }
   return Response.json({});
 }
 
@@ -239,6 +268,8 @@ async function createLobby(req: Request, env: Env): Promise<Response> {
   if ((recent?.n ?? 0) >= hourlyLimit) throw new ProtocolError("rate_limited");
 
   const account = await requireAccount(req, env);
+  await limitPerDay(env, "SELECT COUNT(*) AS n FROM lobby_members WHERE user_id = ? AND role = 'owner' AND added_at > ?", account.userId,
+    ACCOUNT_LIMITS.lobbiesPerDay, "lobbies");
   const { name } = await parseBody(req, CreateLobbyBody);
   const id = env.LOBBY.newUniqueId();
   const lobbyId = id.toString();
@@ -280,11 +311,13 @@ async function refreshToken(req: Request, env: Env, params: Params): Promise<Res
 async function createInvite(req: Request, env: Env, params: Params): Promise<Response> {
   const account = await requireAccount(req, env);
   if ((await membership(env, params.lobbyId, account.userId)) !== "owner") throw new ProtocolError("forbidden", "only the lobby owner can invite");
+  await limitPerDay(env, "SELECT COUNT(*) AS n FROM invites WHERE created_by = ? AND created_at > ?", account.userId,
+    ACCOUNT_LIMITS.invitesPerDay, "invites");
   const body = await parseBody(req, InviteBody);
   const token = toB64u(crypto.getRandomValues(new Uint8Array(24)));
   const expiresAt = Date.now() + body.ttlMs;
-  await env.DB.prepare("INSERT INTO invites (token_hash, lobby_id, role, created_by, expires_at, max_uses) VALUES (?, ?, ?, ?, ?, ?)")
-    .bind(await sha256Hex(token), params.lobbyId, body.role, account.userId, expiresAt, body.maxUses ?? null).run();
+  await env.DB.prepare("INSERT INTO invites (token_hash, lobby_id, role, created_by, expires_at, max_uses, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .bind(await sha256Hex(token), params.lobbyId, body.role, account.userId, expiresAt, body.maxUses ?? null, Date.now()).run();
   return Response.json({ token, url: `${env.PUBLIC_URL}/invite/${token}`, expiresAt, role: body.role }, { status: 201 });
 }
 
@@ -399,15 +432,59 @@ async function deleteLobby(req: Request, env: Env, params: Params): Promise<Resp
   const account = await requireAccount(req, env);
   if ((await membership(env, params.lobbyId, account.userId)) !== "owner") throw new ProtocolError("forbidden", "only the lobby owner can delete it");
 
-  const { results: members } = await env.DB.prepare("SELECT user_id FROM lobby_members WHERE lobby_id = ?").bind(params.lobbyId).all<{ user_id: string }>();
-  await env.DB.batch([
-    env.DB.prepare("UPDATE lobbies SET status = 'closed' WHERE lobby_id = ?").bind(params.lobbyId),
-    env.DB.prepare("DELETE FROM lobby_members WHERE lobby_id = ?").bind(params.lobbyId),
-    env.DB.prepare("DELETE FROM invites WHERE lobby_id = ?").bind(params.lobbyId),
-  ]);
-  await lobbyStub(env, params.lobbyId!).deleteLobby();
-  for (const member of members) await userStub(env, member.user_id).notify({ t: "lobbies" });
+  await closeLobby(env, params.lobbyId!);
   return Response.json({});
+}
+
+/** Closes a lobby for everyone, erases what it stored, and tells its members' machines. */
+async function closeLobby(env: Env, lobbyId: string): Promise<void> {
+  const { results: members } = await env.DB.prepare("SELECT user_id FROM lobby_members WHERE lobby_id = ?").bind(lobbyId).all<{ user_id: string }>();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE lobbies SET status = 'closed' WHERE lobby_id = ?").bind(lobbyId),
+    env.DB.prepare("DELETE FROM lobby_members WHERE lobby_id = ?").bind(lobbyId),
+    env.DB.prepare("DELETE FROM invites WHERE lobby_id = ?").bind(lobbyId),
+  ]);
+  await lobbyStub(env, lobbyId).deleteLobby();
+  for (const member of members) await userStub(env, member.user_id).notify({ t: "lobbies" });
+}
+
+/** Everything the relay keeps about the caller. Message content isn't here: the relay only has it encrypted. */
+async function exportAccount(req: Request, env: Env): Promise<Response> {
+  const account = await requireAccount(req, env);
+  const user = await env.DB.prepare("SELECT user_id, github_id, login, avatar_url, created_at FROM users WHERE user_id = ?").bind(account.userId).first();
+  const devices = await env.DB.prepare("SELECT machine_id, name, created_at, revoked_at FROM machines WHERE user_id = ?").bind(account.userId).all();
+  const lobbies = await env.DB.prepare(
+    `SELECT lm.lobby_id, l.name, lm.role, lm.added_at FROM lobby_members lm JOIN lobbies l ON l.lobby_id = lm.lobby_id WHERE lm.user_id = ?`,
+  ).bind(account.userId).all();
+  const invites = await env.DB.prepare("SELECT lobby_id, role, expires_at, max_uses, uses FROM invites WHERE created_by = ?").bind(account.userId).all();
+  return Response.json(
+    { exportedAt: Date.now(), user, devices: devices.results, lobbies: lobbies.results, invitesCreated: invites.results },
+    { headers: { "content-disposition": 'attachment; filename="agentlobbies-account.json"' } },
+  );
+}
+
+/**
+ * Deletes the caller's account: lobbies they own are deleted for everyone, they leave the rest (those
+ * lobbies get new keys), and their devices, invites, and account are erased.
+ */
+async function deleteAccount(req: Request, env: Env): Promise<Response> {
+  const account = await requireAccount(req, env);
+  for (const lobby of await lobbiesOf(env, account.userId)) {
+    if (lobby.role === "owner") {
+      await closeLobby(env, lobby.lobby_id);
+    } else {
+      await env.DB.prepare("DELETE FROM lobby_members WHERE lobby_id = ? AND user_id = ?").bind(lobby.lobby_id, account.userId).run();
+      await lobbyStub(env, lobby.lobby_id).removeUser(account.userId);
+    }
+  }
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM lobby_members WHERE user_id = ?").bind(account.userId),
+    env.DB.prepare("DELETE FROM invites WHERE created_by = ?").bind(account.userId),
+    env.DB.prepare("DELETE FROM machines WHERE user_id = ?").bind(account.userId),
+    env.DB.prepare("DELETE FROM users WHERE user_id = ?").bind(account.userId),
+  ]);
+  await userStub(env, account.userId).forget();
+  return signOut();
 }
 
 /** Who said what to whom and when, without the content (LLD 15.6). */
@@ -496,6 +573,12 @@ async function accountFromToken(env: Env, token: string): Promise<Account | unde
 
 function requireSameOrigin(req: Request, env: Env): void {
   if (req.headers.get("origin") !== new URL(env.PUBLIC_URL).origin) throw new ProtocolError("forbidden", "cross-site request");
+}
+
+/** Throws rate_limited if `query` (bound to the user and a time 24 hours ago) counts `limit` or more. */
+async function limitPerDay(env: Env, query: string, userId: string, limit: number, what: string): Promise<void> {
+  const row = await env.DB.prepare(query).bind(userId, Date.now() - DAY_MS).first<{ n: number }>();
+  if ((row?.n ?? 0) >= limit) throw new ProtocolError("rate_limited", `too many ${what} today (${limit} a day); try again tomorrow`);
 }
 
 /** Lobby membership of a user, or undefined if they aren't a member. */
