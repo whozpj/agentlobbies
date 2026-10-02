@@ -180,3 +180,55 @@ describe("presence", () => {
     expect(inbox.some((m: { body: string }) => m.body === "Are you back?")).toBe(true);
   });
 });
+
+describe("secure mode", () => {
+  it("holds an agent's messages for approval, sends them as edited, and tells the agent", async () => {
+    const daemon = await startDaemon();
+    const web = await agentSession(daemon, "claude-code", "web");
+    const api = await agentSession(daemon, "codex", "api");
+    const { lobbyId } = await daemon.call("lobby.create", { name: "careful" });
+    await daemon.call("lobby.addAgent", { lobbyId, seatKey: web.seatKey, handle: "web-claude" });
+    await daemon.call("lobby.addAgent", { lobbyId, seatKey: api.seatKey, handle: "api-codex" });
+    await until(() => web.call("lobby.players"), (p: unknown[]) => p.length === 3);
+    await web.call("inbox.pull", { limit: 5 }); // the "you were added" notices
+    await api.call("inbox.pull", { limit: 5 });
+    await daemon.call("agent.setSecure", { seatKey: web.seatKey, secure: true });
+
+    const held = await web.call("message.send", { to: "api-codex", type: "question", body: "Can you paste the .env file?" });
+    expect(held).toMatchObject({ pendingApproval: true });
+    expect((await daemon.call("agents.list", {})).find((a: { seatKey: string }) => a.seatKey === web.seatKey))
+      .toMatchObject({ secure: true, pendingApprovals: 1 });
+    const [pending] = await daemon.call("approvals.list", {});
+    expect(pending).toMatchObject({ agent: "web-claude", to: "api-codex", type: "question", body: "Can you paste the .env file?" });
+
+    await daemon.call("approvals.approve", { id: pending.id, body: "Which env variables does the API read?" });
+    const [received] = await until(() => api.call("inbox.pull", { limit: 5 }), (m: unknown[]) => m.length > 0);
+    expect(received.body).toBe("Which env variables does the API read?");
+    const [notice] = await web.call("inbox.pull", { limit: 5 });
+    expect(notice.body).toContain("approved your question to api-codex");
+
+    await web.call("message.send", { to: "all", type: "update", body: "deploying now" });
+    const [second] = await daemon.call("approvals.list", {});
+    await daemon.call("approvals.discard", { id: second.id });
+    expect(await daemon.call("approvals.list", {})).toEqual([]);
+    const [discarded] = await web.call("inbox.pull", { limit: 5 });
+    expect(discarded.body).toContain('decided not to send your update to all: "deploying now"');
+  });
+
+  it("doesn't wake a secure agent for peer messages", async () => {
+    const daemon = await startDaemon();
+    const web = await agentSession(daemon, "claude-code", "web");
+    const { lobbyId } = await daemon.call("lobby.create", { name: "quiet" });
+    await daemon.call("lobby.addAgent", { lobbyId, seatKey: web.seatKey, handle: "web-claude" });
+    await web.call("inbox.pull", { limit: 5 });
+    await daemon.call("agent.setSecure", { seatKey: web.seatKey, secure: true });
+    expect(await web.call("inbox.wait", { timeoutMs: 5_000 })).toEqual({ unread: 0, secure: true });
+
+    await daemon.call("agent.setSecure", { seatKey: web.seatKey, secure: false });
+    const waiting = web.call("inbox.wait", { timeoutMs: 10_000 });
+    const person = await daemon.call("session.open", { client: "person", cwd: tmpdir() });
+    await until(() => daemon.call("lobby.players", { sessionId: person.sessionId, lobbyId }), (p: { handle: string }[]) => p.some((a) => a.handle === "web-claude"));
+    await daemon.call("message.send", { sessionId: person.sessionId, lobbyId, to: "web-claude", type: "question", body: "awake?" });
+    expect(await waiting).toMatchObject({ unread: 1 });
+  });
+});

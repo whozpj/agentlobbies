@@ -164,13 +164,21 @@ function DeleteLobbyModal({ lobby, onClose }: { lobby: Lobby; onClose: () => voi
   );
 }
 
-function EditAgentModal({ lobby, agent, onClose }: { lobby: Lobby; agent: Agent; onClose: () => void }) {
+/** One of your own agents, as your machine knows it: secure mode is kept there. */
+function localCopy(agent: Agent, myAgents: MyAgent[]): MyAgent | undefined {
+  return myAgents.find((a) => a.lobbies.some((l) => l.agentId === agent.agentId));
+}
+
+function EditAgentModal({ lobby, agent, myAgents, onClose }: { lobby: Lobby; agent: Agent; myAgents: MyAgent[]; onClose: () => void }) {
+  const mine = localCopy(agent, myAgents);
   const [handle, setHandle] = useState(agent.handle);
   const [owns, setOwns] = useState(agent.owns.join(", "));
+  const [secure, setSecure] = useState(mine?.secure ?? false);
   const [error, setError] = useState("");
   const save = async () => {
     try {
       await api.updateAgent(lobby.lobbyId, agent.agentId, { handle, owns: owns.split(",") });
+      if (mine && secure !== (mine.secure ?? false)) await api.setSecure(mine, secure);
       onClose();
     } catch (e) {
       setError((e as Error).message);
@@ -189,6 +197,18 @@ function EditAgentModal({ lobby, agent, onClose }: { lobby: Lobby; agent: Agent;
         <input value={owns} placeholder="api, frontend" onChange={(e) => setOwns(e.target.value)} />
         <small className="muted">Areas it answers for, separated by commas. Others can ask it by area (owner:frontend).</small>
       </label>
+      {mine && (
+        <label className="toggle">
+          <input type="checkbox" checked={secure} onChange={(e) => setSecure(e.target.checked)} />
+          <span>
+            <b>Secure mode</b>
+            <small className="muted">
+              Every message it writes waits for your approval{isHosted ? " on its machine (agentlobbies dashboard)" : " under Approvals"},
+              and messages from other agents don't wake it: it reads them when you next talk to it.
+            </small>
+          </span>
+        </label>
+      )}
       {error && <p className="error">{error}</p>}
     </Modal>
   );
@@ -196,13 +216,14 @@ function EditAgentModal({ lobby, agent, onClose }: { lobby: Lobby; agent: Agent;
 
 interface AgentCardProps {
   agent: Agent;
+  secure: boolean;
   selected: boolean;
   onSelect: () => void;
   onEdit?: () => void;
   onRemove?: () => void;
 }
 
-function AgentCard({ agent, selected, onSelect, onEdit, onRemove }: AgentCardProps) {
+function AgentCard({ agent, secure, selected, onSelect, onEdit, onRemove }: AgentCardProps) {
   return (
     <article className={selected ? "agent-card selected" : "agent-card"} onClick={onSelect}>
       <header>
@@ -219,7 +240,12 @@ function AgentCard({ agent, selected, onSelect, onEdit, onRemove }: AgentCardPro
         {agent.owner && <span className="owner" data-testid={`owner-${agent.handle}`}><Avatar url={agent.owner.avatarUrl} size={16} />@{agent.owner.login}</span>}
         <span>{agent.client}</span>
       </div>
-      {agent.owns.length > 0 && <div className="tags">{agent.owns.map((o) => <span key={o} className="tag">{o}</span>)}</div>}
+      {(agent.owns.length > 0 || secure) && (
+        <div className="tags">
+          {secure && <span className="tag secure" title="Its messages wait for approval"><LockIcon /> secure</span>}
+          {agent.owns.map((o) => <span key={o} className="tag">{o}</span>)}
+        </div>
+      )}
       <p className="working muted">{agent.status !== "offline" && agent.workingOn ? agent.workingOn : STATUS_LABEL[agent.status]}</p>
     </article>
   );
@@ -300,7 +326,7 @@ export function LobbyPage({ lobby, me, agents: myAgents, onChange }: { lobby: Lo
           {agents.map((a) => {
             const mayChange = isOwner || a.owner?.login === me?.login;
             return (
-              <AgentCard key={a.agentId} agent={a} selected={selected === a.handle} onSelect={() => toggle(a.handle)}
+              <AgentCard key={a.agentId} agent={a} secure={localCopy(a, myAgents)?.secure ?? false} selected={selected === a.handle} onSelect={() => toggle(a.handle)}
                 onEdit={mayChange ? () => setEditing(a) : undefined}
                 onRemove={mayChange ? () => api.removeAgent(lobby.lobbyId, a.agentId).then(onChange) : undefined} />
             );
@@ -323,7 +349,7 @@ export function LobbyPage({ lobby, me, agents: myAgents, onChange }: { lobby: Lo
       {dialog === "add" && <AddAgentModal lobby={lobby} agents={myAgents} onClose={close} />}
       {dialog === "people" && <PeopleModal lobby={lobby} me={me} onClose={close} />}
       {dialog === "delete" && <DeleteLobbyModal lobby={lobby} onClose={close} />}
-      {editing && <EditAgentModal lobby={lobby} agent={editing} onClose={() => { setEditing(null); onChange(); }} />}
+      {editing && <EditAgentModal lobby={lobby} agent={editing} myAgents={myAgents} onClose={() => { setEditing(null); onChange(); }} />}
     </div>
   );
 }

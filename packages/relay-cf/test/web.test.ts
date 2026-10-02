@@ -180,7 +180,9 @@ describe("reaching your machines from the web", () => {
     const agent = { seatKey: "abc123", client: "claude-code", folder: "web", online: true, lobbies: [] };
     daemon.send({ t: "agents", agents: [agent] });
     const machines = await live.next("machines" as never, (f: { machines: { agents: unknown[] }[] }) => f.machines[0]?.agents.length === 1);
-    expect((machines as unknown as { machines: unknown[] }).machines).toEqual([{ machineId: machine.machineId, name: "test-mac", online: true, agents: [agent] }]);
+    expect((machines as unknown as { machines: unknown[] }).machines).toEqual([
+      { machineId: machine.machineId, name: "test-mac", online: true, agents: [{ ...agent, secure: false, pendingApprovals: 0 }] },
+    ]);
 
     const adding = web(`/v1/lobbies/${lobby.lobbyId}/agents`, cookie, { method: "POST", body: { machineId: machine.machineId, seatKey: "abc123", owns: ["web"] } });
     const call = (await daemon.next("call" as never)) as unknown as { id: string; method: string; params: Record<string, unknown> };

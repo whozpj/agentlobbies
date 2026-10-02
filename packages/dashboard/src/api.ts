@@ -27,6 +27,8 @@ export interface MyAgent {
   folder: string;
   cwd: string;
   online: boolean;
+  secure?: boolean;
+  pendingApprovals?: number;
   machineId?: string;
   machine?: string;
   lobbies: { lobbyId: string; name: string | null; handle: string; agentId: string }[];
@@ -53,6 +55,18 @@ export interface Message {
 export interface AgentChanges {
   handle: string;
   owns: string[];
+}
+
+/** A message an agent in secure mode wants to send, waiting for its user. */
+export interface PendingMessage {
+  id: string;
+  lobbyId: string;
+  lobbyName: string | null;
+  agent: string;
+  to: string;
+  type: string;
+  body: string;
+  createdAt: number;
 }
 
 /** A machine or browser signed in to the account, which receives its lobby keys. */
@@ -123,6 +137,10 @@ const local = {
   deleteLobby: (lobbyId: string) => send("DELETE", `/api/lobbies/${lobbyId}`),
   forgetLobby: (lobbyId: string) => send("POST", `/api/lobbies/${lobbyId}/forget`),
   devices: () => request<Device[]>("/api/devices"),
+  setSecure: (agent: MyAgent, secure: boolean) => send("POST", `/api/agents/${agent.seatKey}/secure`, { secure }),
+  approvals: () => request<PendingMessage[]>("/api/approvals"),
+  approve: (id: string, body: string) => send("POST", `/api/approvals/${id}/approve`, { body }),
+  discard: (id: string) => send("POST", `/api/approvals/${id}/discard`),
   revokeDevice: (deviceId: string) => send("DELETE", `/api/devices/${deviceId}`),
   exportAccount: () => request<unknown>("/api/account/export"),
   deleteAccount: () => send("DELETE", "/api/account"),
@@ -232,6 +250,12 @@ const relay = {
     if (device && (await device).machineId === deviceId) await forgetDevice((await device).userId);
   },
   exportAccount: () => request<unknown>("/v1/me/export"),
+  setSecure: (agent: MyAgent, secure: boolean) =>
+    send("POST", "/v1/me/agents/secure", { machineId: agent.machineId, seatKey: agent.seatKey, secure }),
+  // Held messages are plain text on the agent's machine, so they're approved there, not on the web.
+  approvals: async (): Promise<PendingMessage[]> => [],
+  approve: async (_id: string, _body: string) => {},
+  discard: async (_id: string) => {},
   async deleteAccount() {
     await send("DELETE", "/v1/me");
     if (device) await forgetDevice((await device).userId);

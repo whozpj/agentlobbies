@@ -32,7 +32,15 @@ export function AgentsPage({ agents }: { agents: MyAgent[] }) {
                 <tr key={`${a.machineId ?? ""}/${a.seatKey}`}>
                   <td><b>{a.folder}</b></td>
                   <td>{a.client}</td>
-                  <td><StatusDot status={a.online ? "active" : "offline"} /> {a.online ? "running" : "not running"}</td>
+                  <td>
+                    <StatusDot status={a.online ? "active" : "offline"} /> {a.online ? "running" : "not running"}
+                    {a.secure && <span className="tag secure">secure</span>}
+                    {(a.pendingApprovals ?? 0) > 0 && (
+                      isHosted
+                        ? <div className="muted small">{a.pendingApprovals} waiting for approval: open <code>agentlobbies dashboard</code> on {a.machine}</div>
+                        : <div className="small"><a href="#/approvals">{a.pendingApprovals} waiting for approval</a></div>
+                    )}
+                  </td>
                   <td>
                     {a.lobbies.length
                       ? a.lobbies.map((l) => <a key={l.lobbyId} className="tag link" href={`#/lobbies/${l.lobbyId}`}>{l.name ?? l.lobbyId.slice(0, 8)} · {l.handle}</a>)

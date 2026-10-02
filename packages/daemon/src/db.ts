@@ -63,6 +63,13 @@ const SCHEMA = `
     surfaced_at INTEGER
   );
 
+  CREATE TABLE IF NOT EXISTS pending_sends (
+    id         TEXT PRIMARY KEY,
+    seat_id    TEXT NOT NULL,
+    params     TEXT NOT NULL,                -- the message.send parameters, waiting for the user's approval
+    created_at INTEGER NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS lobby_keys (
     lobby_id TEXT NOT NULL,
     epoch    INTEGER NOT NULL,
@@ -111,6 +118,14 @@ export interface LocalAgent {
   client: string;
   cwd: string;
   last_seen_at: number;
+  secure: number;
+}
+
+export interface PendingSend {
+  id: string;
+  seat_id: string;
+  params: string;
+  created_at: number;
 }
 
 export interface Notice {
@@ -126,6 +141,9 @@ export class Db {
     // Added in v0.4: a message this machine can't decrypt yet waits, unseen, until the key arrives.
     const inboxColumns = db.prepare("PRAGMA table_info(inbox)").all() as { name: string }[];
     if (!inboxColumns.some((c) => c.name === "locked")) db.exec("ALTER TABLE inbox ADD COLUMN locked INTEGER NOT NULL DEFAULT 0");
+    // Added in v0.5: secure mode, per agent.
+    const agentColumns = db.prepare("PRAGMA table_info(local_agents)").all() as { name: string }[];
+    if (!agentColumns.some((c) => c.name === "secure")) db.exec("ALTER TABLE local_agents ADD COLUMN secure INTEGER NOT NULL DEFAULT 0");
   }
 
   close(): void {
@@ -207,6 +225,7 @@ export class Db {
       this.db.prepare("DELETE FROM roster WHERE seat_id = ?").run(seatId);
       this.db.prepare("DELETE FROM notices WHERE seat_id = ?").run(seatId);
       this.db.prepare("DELETE FROM outbox WHERE seat_id = ?").run(seatId);
+      this.db.prepare("DELETE FROM pending_sends WHERE seat_id = ?").run(seatId);
     }
     this.db.prepare("UPDATE seats SET state = 'left' WHERE lobby_id = ? AND state = 'active'").run(lobbyId);
     this.db.prepare("DELETE FROM lobby_keys WHERE lobby_id = ?").run(lobbyId);
@@ -326,6 +345,26 @@ export class Db {
 
   localAgent(seatKey: string): LocalAgent | undefined {
     return this.db.prepare("SELECT * FROM local_agents WHERE seat_key = ?").get(seatKey) as LocalAgent | undefined;
+  }
+
+  setSecure(seatKey: string, secure: boolean): void {
+    this.db.prepare("UPDATE local_agents SET secure = ? WHERE seat_key = ?").run(secure ? 1 : 0, seatKey);
+  }
+
+  addPendingSend(id: string, seatId: string, params: unknown): void {
+    this.db.prepare("INSERT INTO pending_sends (id, seat_id, params, created_at) VALUES (?, ?, ?, ?)").run(id, seatId, JSON.stringify(params), Date.now());
+  }
+
+  pendingSends(): PendingSend[] {
+    return this.db.prepare("SELECT * FROM pending_sends ORDER BY created_at").all() as unknown as PendingSend[];
+  }
+
+  pendingSend(id: string): PendingSend | undefined {
+    return this.db.prepare("SELECT * FROM pending_sends WHERE id = ?").get(id) as PendingSend | undefined;
+  }
+
+  removePendingSend(id: string): void {
+    this.db.prepare("DELETE FROM pending_sends WHERE id = ?").run(id);
   }
 
   /** Seats (active) that belong to a seat key, e.g. every lobby an agent is in. */

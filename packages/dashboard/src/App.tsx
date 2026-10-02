@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { AccountPage } from "./AccountPage";
+import { ApprovalsPage } from "./ApprovalsPage";
 import { AgentsPage } from "./AgentsPage";
 import { LegalPage } from "./LegalPage";
 import { api, isHosted, lobbyName, type Lobby, type Me, type MyAgent } from "./api";
@@ -71,6 +72,8 @@ export function App() {
   const lobbyId = route.match(/^\/lobbies\/([0-9a-f]{64})$/)?.[1];
   const lobby = lobbies.find((l) => l.lobbyId === lobbyId);
   const online = agents.filter((a) => a.online).length;
+  let waitingForApproval = 0;
+  for (const a of agents) waitingForApproval += a.pendingApprovals ?? 0;
 
   return (
     <div className="app">
@@ -89,6 +92,11 @@ export function App() {
           <a href="#/agents" className={route === "/agents" ? "active" : ""}>
             My agents <span className="count" data-testid="agent-count">{online}</span>
           </a>
+          {!isHosted && (
+            <a href="#/approvals" className={route === "/approvals" ? "active" : ""}>
+              Approvals {waitingForApproval > 0 && <span className="count waiting-count" data-testid="approval-count">{waitingForApproval}</span>}
+            </a>
+          )}
           <a href="#/account" className={route === "/account" ? "active" : ""}>Account</a>
         </nav>
         <div className="topbar-right">
@@ -106,6 +114,7 @@ export function App() {
         {lobby ? <LobbyPage lobby={lobby} me={me ?? null} agents={agents} onChange={refresh} />
           : route === "/agents" ? <AgentsPage agents={agents} />
           : route === "/account" ? <AccountPage me={me ?? null} />
+          : route === "/approvals" ? <ApprovalsPage onChange={refresh} />
           : <LobbiesPage lobbies={lobbies} onChange={refresh} />}
       </main>
     </div>

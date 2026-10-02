@@ -36,7 +36,7 @@ type KeysFrame = Extract<ServerFrame, { t: "keys" }>;
 const KEY_WAIT_MS = 5_000;
 
 /** Only these may be asked for from the hosted dashboard, through the user object (LLD 15.6). */
-const WEB_METHODS = new Set(["lobby.addAgent"]);
+const WEB_METHODS = new Set(["lobby.addAgent", "agent.setSecure"]);
 
 /** A message as handed to an MCP server or the CLI. */
 export interface SurfacedMessage {
@@ -351,7 +351,56 @@ export class Daemon extends EventEmitter {
 
     "lobby.players": async (p) => this.db.roster(this.seat(p).seat_id),
 
-    "message.send": async (p) => this.sendMessage(this.seat(p), p),
+    // In secure mode an agent's message waits for its user's approval instead of going out.
+    "message.send": async (p) => {
+      const seat = this.seat(p);
+      const { seatKey } = this.session(p);
+      if (seatKey !== PERSON && this.isSecure(seatKey)) return this.holdForApproval(seat, p);
+      return this.sendMessage(seat, p);
+    },
+
+    /** Secure mode: every message the agent sends waits for approval, and peer messages don't wake it. */
+    "agent.setSecure": async (p) => {
+      const seatKey = String(p.seatKey ?? "");
+      if (!this.db.localAgent(seatKey)) throw new DaemonError("not_found", "that agent hasn't connected on this machine");
+      this.db.setSecure(seatKey, p.secure === true);
+      if (p.secure === true) {
+        // Stop any wait that would wake the agent.
+        for (const seat of this.db.seatsFor(seatKey)) {
+          const waiter = this.inboxWaiters.get(seat.seat_id);
+          if (waiter) waiter({ cancelled: true });
+        }
+      }
+      this.emit("activity", { type: "agents" });
+      return {};
+    },
+
+    "approvals.list": async () => this.db.pendingSends().map((pending) => this.describePending(pending)),
+
+    /** Sends a held message, with the user's edits to its text if any. */
+    "approvals.approve": async (p) => {
+      const pending = this.db.pendingSend(String(p.id ?? ""));
+      if (!pending) throw new DaemonError("not_found", "that message isn't waiting for approval");
+      const seat = this.db.seat(pending.seat_id);
+      const params = JSON.parse(pending.params) as Params;
+      if (typeof p.body === "string" && p.body.trim()) params.body = p.body;
+      const result = await this.sendMessage(seat, params);
+      this.db.removePendingSend(pending.id);
+      const { to, type } = this.describePending(pending);
+      this.db.addNotice(seat.seat_id, `Your user approved your ${type} to ${to}, and it was sent.`);
+      this.emit("activity", { type: "agents" });
+      return result;
+    },
+
+    "approvals.discard": async (p) => {
+      const pending = this.db.pendingSend(String(p.id ?? ""));
+      if (!pending) throw new DaemonError("not_found", "that message isn't waiting for approval");
+      this.db.removePendingSend(pending.id);
+      const { to, type, body } = this.describePending(pending);
+      this.db.addNotice(pending.seat_id, `Your user decided not to send your ${type} to ${to}: "${body.slice(0, 200)}"`);
+      this.emit("activity", { type: "agents" });
+      return {};
+    },
 
     "inbox.pull": async (p) => {
       const seat = this.seat(p);
@@ -405,6 +454,8 @@ export class Daemon extends EventEmitter {
 
     // One waiter per seat: a newer wait (the next idle period) replaces the older one.
     "inbox.wait": async (p) => {
+      // Secure mode: peer messages never wake the agent; it sees them when its user next talks to it.
+      if (this.isSecure(this.session(p).seatKey)) return { unread: 0, secure: true };
       const seatId = this.seat(p).seat_id;
       const unread = this.db.unreadCount(seatId);
       if (unread > 0) return { unread };
@@ -1002,13 +1053,54 @@ export class Daemon extends EventEmitter {
     }
   }
 
+  /** How many messages from this agent, in any of its lobbies, are waiting for approval. */
+  private pendingCount(seatKey: string, pendingBySeat: Map<string, number>): number {
+    let count = 0;
+    for (const seat of this.db.seatsFor(seatKey)) count += pendingBySeat.get(seat.seat_id) ?? 0;
+    return count;
+  }
+
+  private isSecure(seatKey: string): boolean {
+    return this.db.localAgent(seatKey)?.secure === 1;
+  }
+
+  /** Checks a message like a real send would, then keeps it for the user to approve or discard. */
+  private holdForApproval(seat: Seat, p: Params): { id: string; pendingApproval: true } {
+    const body = String(p.body ?? "");
+    if (!body.trim()) throw new DaemonError("bad_request", "message is empty");
+    if (p.to !== undefined) this.resolveTo(seat, String(p.to)); // a wrong recipient fails now, not after approval
+    const id = ulid();
+    const params: Params = { to: p.to, type: p.type ?? "update", body, inReplyTo: p.inReplyTo, attachments: p.attachments };
+    this.db.addPendingSend(id, seat.seat_id, params);
+    this.emit("activity", { type: "agents" });
+    return { id, pendingApproval: true };
+  }
+
+  private describePending(pending: { id: string; seat_id: string; params: string; created_at: number }) {
+    const seat = this.db.seat(pending.seat_id);
+    const params = JSON.parse(pending.params) as Params;
+    let to = String(params.to ?? "");
+    if (!to && params.inReplyTo) {
+      const parent = this.db.findEnvelope(seat.seat_id, String(params.inReplyTo));
+      to = this.db.roster(seat.seat_id).find((a) => a.agentId === parent?.from)?.handle ?? "the asker";
+    }
+    return {
+      id: pending.id, lobbyId: seat.lobby_id, lobbyName: seat.lobby_name, agent: seat.handle, to: to || "all",
+      type: String(params.type ?? "update"), body: String(params.body ?? ""), createdAt: pending.created_at,
+    };
+  }
+
   private localAgents() {
+    const pendingBySeat = new Map<string, number>();
+    for (const pending of this.db.pendingSends()) pendingBySeat.set(pending.seat_id, (pendingBySeat.get(pending.seat_id) ?? 0) + 1);
     return this.db.localAgents().map((a) => ({
       seatKey: a.seat_key,
       client: a.client,
       folder: basename(a.cwd),
       cwd: a.cwd,
       online: this.isRunning(a.seat_key),
+      secure: a.secure === 1,
+      pendingApprovals: this.pendingCount(a.seat_key, pendingBySeat),
       lobbies: this.db.seatsFor(a.seat_key).map((s) => ({ lobbyId: s.lobby_id, name: s.lobby_name, handle: s.handle, agentId: s.agent_id })),
     }));
   }

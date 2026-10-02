@@ -138,6 +138,45 @@ const inbox = defineCommand({
   }),
 });
 
+interface Pending {
+  id: string;
+  agent: string;
+  to: string;
+  type: string;
+  body: string;
+  lobbyName: string | null;
+}
+
+const approvals = defineCommand({
+  meta: { description: "List messages from agents in secure mode, waiting for your approval" },
+  run: () => withLobby(async (call) => {
+    const pending: Pending[] = await call("approvals.list");
+    if (pending.length === 0) console.log(pc.dim("Nothing waiting for approval."));
+    for (const m of pending) {
+      console.log(`${pc.bold(m.id)}  ${m.agent} → ${m.to} (${m.type}) in ${m.lobbyName ?? "a lobby"}\n${m.body}\n`);
+    }
+    if (pending.length > 0) console.log(pc.dim("Send one with: agentlobbies approve <id>   Drop one with: agentlobbies discard <id>"));
+  }),
+});
+
+const approve = defineCommand({
+  meta: { description: "Send a message that's waiting for your approval" },
+  args: { id: { type: "positional", description: "The message's id, from `agentlobbies approvals`" } },
+  run: ({ args }) => withLobby(async (call) => {
+    await call("approvals.approve", { id: args.id });
+    console.log(`${pc.green("✓")} Sent.`);
+  }),
+});
+
+const discard = defineCommand({
+  meta: { description: "Drop a message that's waiting for your approval" },
+  args: { id: { type: "positional", description: "The message's id, from `agentlobbies approvals`" } },
+  run: ({ args }) => withLobby(async (call) => {
+    await call("approvals.discard", { id: args.id });
+    console.log("Discarded. The agent is told it wasn't sent.");
+  }),
+});
+
 const install = defineCommand({
   meta: { description: "Add Agent Lobbies to your coding agents (Claude Code, Codex)" },
   run: async () => {
@@ -250,5 +289,5 @@ const mcp = defineCommand({
 
 await runMain(defineCommand({
   meta: { name: "agentlobbies", version: CLIENT_VERSION, description: "Let your coding agents talk to each other" },
-  subCommands: { install, login, logout, create, invite, accept, dashboard, players, send, inbox, status, doctor, uninstall, mcp },
+  subCommands: { install, login, logout, create, invite, accept, dashboard, players, send, inbox, status, approvals, approve, discard, doctor, uninstall, mcp },
 }));

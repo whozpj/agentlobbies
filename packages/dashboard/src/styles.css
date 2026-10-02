@@ -331,6 +331,17 @@ p { margin: 0; }
 
 @keyframes enter { from { opacity: 0; transform: translateY(-6px); } }
 
+/* Secure mode and approvals */
+
+.toggle { display: flex; gap: 10px; align-items: flex-start; padding: 12px; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 14px; cursor: pointer; }
+.toggle input { margin-top: 3px; accent-color: var(--accent); }
+.toggle span { display: grid; gap: 4px; }
+.tag.secure { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+.waiting-count { color: var(--accent); }
+.approvals { display: grid; gap: 12px; }
+.approval { display: grid; gap: 10px; padding: 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+.approval textarea { width: 100%; font: 14px/1.5 var(--sans); color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px; resize: vertical; }
+
 /* Account and legal pages */
 
 .section { margin-bottom: 28px; display: grid; gap: 10px; justify-items: start; }

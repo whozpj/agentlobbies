@@ -9,6 +9,8 @@ const LocalAgent = z.object({
   client: z.string(),
   folder: z.string(),
   online: z.boolean(),
+  secure: z.boolean().default(false),
+  pendingApprovals: z.number().int().min(0).default(0),
   lobbies: z.array(z.object({ lobbyId: z.string(), name: z.string().nullable(), handle: z.string(), agentId: z.string() })),
 });
 

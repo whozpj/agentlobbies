@@ -58,6 +58,7 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
   ["POST", new URLPattern({ pathname: "/auth/logout" }), webLogout],
   ["GET", new URLPattern({ pathname: "/v1/me" }), me],
   ["GET", new URLPattern({ pathname: "/v1/me/agents" }), myAgents],
+  ["POST", new URLPattern({ pathname: "/v1/me/agents/secure" }), setAgentSecure],
   ["GET", new URLPattern({ pathname: "/v1/me/devices" }), listDevices],
   ["GET", new URLPattern({ pathname: "/v1/me/export" }), exportAccount],
   ["DELETE", new URLPattern({ pathname: "/v1/me" }), deleteAccount],
@@ -218,6 +219,15 @@ async function me(req: Request, env: Env): Promise<Response> {
 async function myAgents(req: Request, env: Env): Promise<Response> {
   const account = await requireAccount(req, env);
   return Response.json(await userStub(env, account.userId).machines());
+}
+
+/** Turns secure mode on or off for one of the user's agents; the agent's machine keeps the setting. */
+async function setAgentSecure(req: Request, env: Env): Promise<Response> {
+  const account = await requireAccount(req, env);
+  const body = await parseBody(req, z.object({ machineId: z.string(), seatKey: z.string(), secure: z.boolean() }));
+  const call = await userStub(env, account.userId).call(body.machineId, "agent.setSecure", { seatKey: body.seatKey, secure: body.secure });
+  if (call.error) return Response.json({ error: call.error }, { status: call.error.code === "machine_offline" ? 409 : 400 });
+  return Response.json({});
 }
 
 /** A daemon's connection to its user object, so the hosted dashboard can reach it (LLD 15.6). */

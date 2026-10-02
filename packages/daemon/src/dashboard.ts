@@ -81,6 +81,11 @@ async function handleApi(source: DashboardSource, req: IncomingMessage, res: Ser
   if (route === "POST /api/lobbies") return reply("lobby.create", await body());
   if (route === "GET /api/agents") return reply("agents.list");
   if (route === "GET /api/devices") return reply("devices.list");
+  if (route === "GET /api/approvals") return reply("approvals.list");
+  const approval = url.pathname.match(/^\/api\/approvals\/([0-9A-HJKMNP-TV-Z]{26})\/(approve|discard)$/);
+  if (approval && req.method === "POST") return reply(`approvals.${approval[2]}`, { ...(await body()), id: approval[1] });
+  const secure = url.pathname.match(/^\/api\/agents\/([0-9a-f]{32})\/secure$/);
+  if (secure && req.method === "POST") return reply("agent.setSecure", { ...(await body()), seatKey: secure[1] });
   if (req.method === "DELETE" && url.pathname.startsWith("/api/devices/")) return reply("devices.revoke", { deviceId: url.pathname.split("/").pop() });
   if (route === "GET /api/account/export") return reply("account.export");
   if (route === "DELETE /api/account") return reply("account.delete");

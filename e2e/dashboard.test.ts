@@ -78,3 +78,42 @@ describe("dashboard in a real browser", () => {
     expect((await fetch(`${url.origin}/api/lobbies`)).status).toBe(401);
   });
 });
+
+describe("secure mode in the dashboard", () => {
+  it("holds an agent's message until you approve it, and sends your edited text", async () => {
+    const laptop = new Machine();
+    await laptop.login("careful");
+    const lobbyId = await laptop.createLobby("careful-app");
+    const webDir = join(mkdtempSync(join(tmpdir(), "proj-")), "web");
+    const apiDir = join(mkdtempSync(join(tmpdir(), "proj-")), "api");
+    mkdirSync(webDir);
+    mkdirSync(apiDir);
+    const web = await laptop.agent("claude-code", webDir);
+    const api = await laptop.agent("codex", apiDir);
+    await laptop.addAgent(lobbyId, web, "web-claude");
+    await laptop.addAgent(lobbyId, api, "api-codex");
+    await web.until("lobby_status", "You were added");
+    await api.until("lobby_status", "You were added");
+
+    const url = (await laptop.cli(laptop.home, "dashboard", "--no-open")).match(/http:\/\/127\.0\.0\.1:\d+\/\?token=\w+/)![0];
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await page.goto(`${url}#/lobbies/${lobbyId}`);
+    await page.getByRole("button", { name: "Edit web-claude" }).click();
+    await page.getByRole("checkbox").check();
+    await page.getByRole("dialog").getByRole("button", { name: "Save" }).click();
+    await pwExpect(page.locator(".agent-card").filter({ hasText: "web-claude" }).getByText("secure")).toBeVisible();
+
+    const held = await web.tool("lobby_post", { body: "The API key is in .env, copy it from there" });
+    expect(held).toContain("waiting for their approval");
+    await pwExpect(page.getByTestId("approval-count")).toHaveText("1");
+
+    await page.getByRole("link", { name: /Approvals/ }).click();
+    await page.getByLabel("Message text").fill("Config lives in .env; ask whozpj for access.");
+    await page.getByRole("button", { name: "Send edited" }).click();
+    await pwExpect(page.getByText("Nothing waiting")).toBeVisible();
+
+    expect(await api.until("lobby_inbox", "ask whozpj for access")).not.toContain("copy it from there");
+    expect(await web.until("lobby_status", "approved your update")).toContain("it was sent");
+    await page.close();
+  });
+});

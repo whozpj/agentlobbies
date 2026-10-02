@@ -31,6 +31,9 @@ function errorText(e: unknown): string {
 
 const text = (t: string): CallToolResult => ({ content: [{ type: "text", text: t }] });
 
+const HELD_TEXT = "Your user has secure mode on, so this message is waiting for their approval before it is sent. " +
+  "You'll be told when they send or discard it. Carry on with your work meanwhile.";
+
 interface Player {
   handle: string;
   client: string;
@@ -104,6 +107,7 @@ export function createServer(call: DaemonCall): McpServer {
     inputSchema: { to: z.string(), question: z.string().min(1).max(16_000), attachments: Attachments },
   }, (args) => withNewMessages(async () => {
     const r = await call("message.send", { to: args.to, type: "question", body: args.question, attachments: args.attachments });
+    if (r.pendingApproval) return text(HELD_TEXT);
     return text(r.queued ? `Queued question ${r.id}; it will send when the lobby reconnects.` : `Sent question ${r.id}.`);
   }));
 
@@ -112,6 +116,7 @@ export function createServer(call: DaemonCall): McpServer {
     inputSchema: { messageId: z.string(), answer: z.string().min(1).max(16_000), attachments: Attachments },
   }, (args) => withNewMessages(async () => {
     const r = await call("message.send", { type: "answer", inReplyTo: args.messageId, body: args.answer, attachments: args.attachments });
+    if (r.pendingApproval) return text(HELD_TEXT);
     return text(`Sent answer ${r.id}.`);
   }));
 
@@ -120,6 +125,7 @@ export function createServer(call: DaemonCall): McpServer {
     inputSchema: { body: z.string().min(1).max(16_000), to: z.string().optional() },
   }, (args) => withNewMessages(async () => {
     const r = await call("message.send", { to: args.to ?? "all", type: "update", body: args.body });
+    if (r.pendingApproval) return text(HELD_TEXT);
     return text(`Posted ${r.id}.`);
   }));
 
