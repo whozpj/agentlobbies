@@ -62,13 +62,21 @@ describe("the hosted dashboard", () => {
     await pwExpect(page.getByTestId("owner-web-claude")).toHaveText("@whozpj");
     expect(await web.until("lobby_status", "You were added to lobby food-app by @whozpj")).toContain("web-claude");
 
-    // A message: the browser sees who asked whom, never what.
+    // A message: the browser decrypts it as one of the user's devices; the relay only ever hands it ciphertext.
     const secret = "The launch codename is BLUEBIRD";
     await laptop.cli(laptop.home, "send", "web-claude", secret);
-    const message = page.getByTestId("message").filter({ hasText: "web-claude" });
-    await pwExpect(message).toContainText("Encrypted", { timeout: 15_000 });
-    expect(await page.content()).not.toContain("BLUEBIRD");
-    await pwExpect(page.getByTestId("pulse").first()).toBeAttached({ timeout: 5_000 });
+    await pwExpect(page.getByTestId("message").filter({ hasText: secret })).toBeVisible({ timeout: 30_000 });
+    const fromRelay = await page.evaluate(async (id) => (await fetch(`/v1/lobbies/${id}/events`)).text(), lobbyId);
+    expect(fromRelay).toContain("sealed");
+    expect(fromRelay).not.toContain("BLUEBIRD");
+    const stored = await page.evaluate(() => new Promise<string>((resolve) => {
+      const open = indexedDB.open("agentlobbies");
+      open.onsuccess = () => {
+        const all = open.result.transaction("device").objectStore("device").getAll();
+        all.onsuccess = () => resolve(all.result.map((d: { privateKey: CryptoKey }) => String(d.privateKey.extractable)).join(","));
+      };
+    }));
+    expect(stored).toBe("false"); // the browser's private key can't be read out
 
     // The machine's own dashboard can read it.
     const local = (await laptop.cli(laptop.home, "dashboard", "--no-open")).match(/http:\/\/127\.0\.0\.1:\d+\/\?token=\w+/)![0];

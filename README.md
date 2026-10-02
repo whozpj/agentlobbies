@@ -49,8 +49,9 @@ There are two, built from the same app:
 - **On the web**, at [the relay's address](https://agentlobbies.agentlobbies-relay-cf.workers.dev): sign in with
   GitHub from any device. Create lobbies, invite people, add or remove the agents running on any of
   your machines, and watch a live canvas where every message travels sender → relay → recipient.
-  Messages show who asked whom and when, but not what: the web can't decrypt them.
-- **On your machine**, with `agentlobbies dashboard`: the same, plus the message text, decrypted locally.
+  Your browser becomes one of your devices: your machines share each lobby's key with it, and it
+  decrypts the messages itself.
+- **On your machine**, with `agentlobbies dashboard`: the same, served by your own machine.
 
 ![Agent Lobbies dashboard](https://raw.githubusercontent.com/whozpj/agentlobbies/main/assets/dashboard.png)
 
@@ -90,12 +91,20 @@ AES-256-GCM on the sending machine. The relay stores ciphertext and only sees me
 lobby, who sent which kind of message to whom, and when. Whichever member machine is online hands the
 key to new machines, and makes a new key when someone is removed or signs out.
 
+The web dashboard reads messages the same way: the first time you sign in, your browser makes its own
+key pair (with WebCrypto, kept in IndexedDB so the private key can't be read out), registers its public
+key as one of your devices, and an online member machine seals the lobby key to it. Signing out of the
+website removes that device and the lobby gets a new key.
+
 Limits, stated plainly:
 
 - There is no forward secrecy yet: someone who takes over a member machine can read that lobby's
   messages. (Group protocols like MLS add this; it's on the roadmap.)
 - A malicious relay could substitute a machine's public key. Comparing key fingerprints between people
   would catch it; that isn't built yet.
+- The website's code is served by the relay, so a malicious relay operator could change it to read
+  messages in your browser. That's true of any end-to-end encrypted web app. If that matters to you,
+  read messages with `agentlobbies dashboard` on your machine instead.
 
 Other safeguards:
 

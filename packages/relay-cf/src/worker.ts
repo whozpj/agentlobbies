@@ -31,6 +31,7 @@ const GitHubSignInBody = z.object({
 });
 const AccountRefreshBody = z.object({ machineId: z.string(), ts: z.number().int(), sig: z.string() });
 const BoxKeyBody = z.object({ boxPublicKey: B64u });
+const DeviceBody = z.object({ boxPublicKey: B64u, name: z.string().max(100) });
 
 type MemberRole = "owner" | "member" | "viewer";
 type Params = Record<string, string | undefined>;
@@ -53,6 +54,9 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
   ["POST", new URLPattern({ pathname: "/auth/logout" }), webLogout],
   ["GET", new URLPattern({ pathname: "/v1/me" }), me],
   ["GET", new URLPattern({ pathname: "/v1/me/agents" }), myAgents],
+  ["POST", new URLPattern({ pathname: "/v1/me/devices" }), addBrowserDevice],
+  ["DELETE", new URLPattern({ pathname: "/v1/me/devices/:machineId" }), removeBrowserDevice],
+  ["GET", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/keys" }), browserKeys],
   ["GET", new URLPattern({ pathname: "/v1/me/ws" }), machineSocket],
   ["GET", new URLPattern({ pathname: "/v1/me/live" }), browserSocket],
   ["GET", new URLPattern({ pathname: "/v1/lobbies" }), listLobbies],
@@ -134,6 +138,42 @@ async function registerBoxKey(req: Request, env: Env): Promise<Response> {
   await env.DB.prepare("UPDATE machines SET box_public_key = ? WHERE machine_id = ?").bind(boxPublicKey, account.machineId).run();
   await forEachLobbyOf(env, account.userId, (lobby) => lobby.refreshKeys());
   return Response.json({});
+}
+
+/**
+ * A browser registers its own encryption key as one of the user's devices, so member machines seal
+ * lobby keys to it and it can read messages (LLD 15.11). A browser has no signing key: it never sends
+ * as an agent and never refreshes an account token.
+ */
+async function addBrowserDevice(req: Request, env: Env): Promise<Response> {
+  const account = await requireAccount(req, env);
+  if (account.machineId) throw new ProtocolError("forbidden", "only a browser registers this way");
+  const { boxPublicKey, name } = await parseBody(req, DeviceBody);
+  const machineId = ulid();
+  await env.DB.prepare("INSERT INTO machines (machine_id, user_id, public_key, box_public_key, name, created_at) VALUES (?, ?, '', ?, ?, ?)")
+    .bind(machineId, account.userId, boxPublicKey, name, Date.now()).run();
+  await forEachLobbyOf(env, account.userId, (lobby) => lobby.refreshKeys());
+  return Response.json({ machineId }, { status: 201 });
+}
+
+/** Signing out of a browser: it can't receive keys any more, and its lobbies make new keys without it. */
+async function removeBrowserDevice(req: Request, env: Env, params: Params): Promise<Response> {
+  const account = await requireAccount(req, env);
+  const result = await env.DB.prepare("UPDATE machines SET revoked_at = ? WHERE machine_id = ? AND user_id = ? AND public_key = '' AND revoked_at IS NULL")
+    .bind(Date.now(), params.machineId, account.userId).run();
+  if (result.meta.changes > 0) await forEachLobbyOf(env, account.userId, (lobby) => lobby.rotateKeys());
+  return Response.json({});
+}
+
+/** The lobby keys sealed to one of the caller's own devices. */
+async function browserKeys(req: Request, env: Env, params: Params): Promise<Response> {
+  const account = await requireAccount(req, env);
+  if (!(await membership(env, params.lobbyId, account.userId))) throw new ProtocolError("forbidden");
+  const machineId = new URL(req.url).searchParams.get("device") ?? "";
+  const device = await env.DB.prepare("SELECT 1 AS ok FROM machines WHERE machine_id = ? AND user_id = ? AND revoked_at IS NULL")
+    .bind(machineId, account.userId).first<{ ok: number }>();
+  if (!device) throw new ProtocolError("forbidden", "that isn't one of your devices");
+  return Response.json(await lobbyStub(env, params.lobbyId!).sealedKeysFor(machineId));
 }
 
 async function webLogout(req: Request, env: Env): Promise<Response> {

@@ -113,7 +113,10 @@ describe("the hosted dashboard's API", () => {
 
     const events = await api(`/v1/lobbies/${lobby.lobbyId}/events`, { headers: { authorization: `Bearer ${owner.token}` } });
     const [message] = await events.json<Record<string, unknown>[]>();
-    expect(message).toEqual({ id: envelope.id, seq: expect.any(Number), from: "web-claude", to: "all", type: "question", inReplyTo: null, committedAt: expect.any(Number) });
+    expect(message).toEqual({
+      id: envelope.id, seq: expect.any(Number), from: "web-claude", fromAgentId: agent.agentId, to: "all", type: "question",
+      inReplyTo: null, committedAt: expect.any(Number), sealed: { epoch: 1, iv: "aXZpdml2aXZpdml2", data: "Y2lwaGVydGV4dA" },
+    });
 
     const stranger = await signIn("meta-stranger");
     expect((await api(`/v1/lobbies/${lobby.lobbyId}/events`, { headers: { authorization: `Bearer ${stranger.token}` } })).status).toBe(403);
@@ -154,8 +157,8 @@ describe("watching a lobby live", () => {
     });
     ws.send({ t: "send", reqId: ulid(), envelope });
     const meta = await watcher.next("meta");
-    expect(meta.message).toMatchObject({ id: envelope.id, from: "watched", to: "all" });
-    expect(JSON.stringify(watcher.frames)).not.toContain("Y2lwaGVydGV4dA");
+    // The content arrives still encrypted; only a member's device can open it.
+    expect(meta.message).toMatchObject({ id: envelope.id, from: "watched", to: "all", sealed: { data: "Y2lwaGVydGV4dA" } });
   });
 
   it("refuses to let a non-member watch", async () => {
@@ -292,5 +295,50 @@ describe("who can do what (security)", () => {
     const reqId = ulid();
     ws.send({ t: "send", reqId, envelope });
     expect(await ws.next("err", (f) => f.reqId === reqId)).toMatchObject({ code: "forbidden" });
+  });
+});
+
+describe("the browser as a device (LLD 15.11)", () => {
+  it("registers a browser's key, asks member machines to seal the lobby key to it, and hands it only its own sealed keys", async () => {
+    const owner = await signIn("device-owner");
+    const lobby = await createLobby("device-owner", owner);
+    const ownerSocket = await TestSocket.open(lobby, owner);
+    await ownerSocket.hello();
+    ownerSocket.send({ t: "keys.put", reqId: ulid(), epoch: 1, create: true, sealed: [{ machineId: owner.machineId, sealed: "c2VhbGVk" }] });
+    await ownerSocket.next("keys", (f) => f.current === 1);
+
+    const cookie = await webSignIn("device-owner");
+    const registered = await web("/v1/me/devices", cookie, { method: "POST", body: { boxPublicKey: "YnJvd3Nlcg", name: "Web browser" } });
+    expect(registered.status).toBe(201);
+    const { machineId } = await registered.json<{ machineId: string }>();
+    const asked = await ownerSocket.next("keys", (f) => f.missing.some((m) => m.machineId === machineId));
+    expect(asked.machines.map((m) => m.machineId)).toContain(machineId);
+
+    ownerSocket.send({ t: "keys.put", reqId: ulid(), epoch: 1, create: false, sealed: [{ machineId, sealed: "Zm9yLWJyb3dzZXI" }] });
+    await ownerSocket.next("ok");
+    const keys = await web(`/v1/lobbies/${lobby.lobbyId}/keys?device=${machineId}`, cookie);
+    expect(await keys.json()).toEqual([{ epoch: 1, sealed: "Zm9yLWJyb3dzZXI" }]);
+    expect((await web(`/v1/lobbies/${lobby.lobbyId}/keys?device=${owner.machineId}`, await webSignIn("device-stranger"))).status).toBe(403);
+  });
+
+  it("removes the browser on sign-out, which makes its lobbies change keys", async () => {
+    const owner = await signIn("device-leaver");
+    const lobby = await createLobby("device-leaver", owner);
+    const ownerSocket = await TestSocket.open(lobby, owner);
+    await ownerSocket.hello();
+    ownerSocket.send({ t: "keys.put", reqId: ulid(), epoch: 1, create: true, sealed: [{ machineId: owner.machineId, sealed: "c2VhbGVk" }] });
+    await ownerSocket.next("keys", (f) => f.current === 1);
+
+    const cookie = await webSignIn("device-leaver");
+    const { machineId } = await (await web("/v1/me/devices", cookie, { method: "POST", body: { boxPublicKey: "YnJvd3Nlcg", name: "Web browser" } })).json<{ machineId: string }>();
+    expect((await web(`/v1/me/devices/${machineId}`, cookie, { method: "DELETE" })).status).toBe(200);
+    const rotate = await ownerSocket.next("keys", (f) => f.rotate);
+    expect(rotate.machines.map((m) => m.machineId)).not.toContain(machineId);
+  });
+
+  it("only lets a browser register as a device, not a machine's account token", async () => {
+    const machine = await signIn("device-machine");
+    const res = await api("/v1/me/devices", { method: "POST", headers: { authorization: `Bearer ${machine.token}`, "content-type": "application/json" }, body: JSON.stringify({ boxPublicKey: "eA", name: "x" }) });
+    expect(res.status).toBe(403);
   });
 });

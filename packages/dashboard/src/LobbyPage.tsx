@@ -247,6 +247,15 @@ export function LobbyPage({ lobby, me, agents: myAgents, onChange }: { lobby: Lo
     }, lobby.lobbyId);
   }, [lobby.lobbyId]);
 
+  // Messages this browser can't read yet: the key arrives once a member's machine is online to share it.
+  useEffect(() => {
+    if (!isHosted || !messages.some((m) => m.body === null)) return;
+    const timer = setInterval(() => {
+      api.messages(lobby.lobbyId).then(setMessages).catch(() => {});
+    }, 5_000);
+    return () => clearInterval(timer);
+  }, [lobby.lobbyId, messages]);
+
   const online = agents.filter((a) => a.status !== "offline").length;
   const answered = new Set(messages.map((m) => m.inReplyTo));
   const openQuestions = messages.filter((m) => m.type === "question" && !answered.has(m.id)).length;

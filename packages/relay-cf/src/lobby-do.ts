@@ -416,7 +416,20 @@ export class LobbyDurableObject extends DurableObject<Env> {
     if (e.to.kind === "broadcast") to = "all";
     else if (e.to.kind === "topic") to = `#${e.to.topic}`;
     else to = handleOf(e.to.agentId);
-    return { id: e.id, seq: event.seq, from: handleOf(e.from), to, type: e.type, inReplyTo: e.inReplyTo ?? null, committedAt: event.committedAt };
+    const meta: MessageMeta = {
+      id: e.id, seq: event.seq, from: handleOf(e.from), fromAgentId: e.from, to, type: e.type,
+      inReplyTo: e.inReplyTo ?? null, committedAt: event.committedAt,
+    };
+    if (e.sealed) meta.sealed = e.sealed;
+    return meta;
+  }
+
+  /** The lobby keys sealed to one device, for a browser to open (LLD 15.11). */
+  async sealedKeysFor(machineId: string): Promise<{ epoch: number; sealed: string }[]> {
+    const { sql } = this.ctx.storage;
+    if (!lobbyExists(sql)) return [];
+    return sql.exec<{ epoch: number; sealed: string }>("SELECT epoch, sealed FROM lobby_keys WHERE machine_id = ? ORDER BY epoch", machineId)
+      .toArray().map((r) => ({ epoch: r.epoch, sealed: r.sealed }));
   }
 
   /** Every agent socket gets the keys frame for its own machine. */

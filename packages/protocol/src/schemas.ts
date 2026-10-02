@@ -103,14 +103,20 @@ export const Envelope = z.object({
 );
 
 /** What the relay can show about a message without reading it (LLD 15.1). */
+/**
+ * What the relay can show about a message: who sent what kind of message to whom, and the content
+ * still encrypted (`sealed`), which only a member's device can open (LLD 15.11).
+ */
 export const MessageMeta = z.object({
   id: Ulid,
   seq: Seq,
   from: z.string(),
+  fromAgentId: Ulid,
   to: z.string(),
   type: MessageType,
   inReplyTo: Ulid.nullable(),
   committedAt: Ms,
+  sealed: Sealed.optional(),
 });
 
 export const BoardEntry = z.object({

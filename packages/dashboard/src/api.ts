@@ -1,3 +1,5 @@
+import { decryptContent, ensureDevice, forgetDevice, openLobbyKey, type Device, type Sealed } from "./crypto";
+
 export interface Agent {
   agentId: string;
   handle: string;
@@ -31,6 +33,7 @@ export interface MyAgent {
 }
 
 export interface Me {
+  userId?: string; // the hosted dashboard's user, for its device key
   login: string;
   avatarUrl: string;
 }
@@ -128,8 +131,62 @@ interface RelayMachine {
 }
 
 /** The relay's API, used by the hosted dashboard. Messages arrive without their (encrypted) content. */
+/** A message as the relay sends it: metadata, and the content still encrypted. */
+interface SealedMessage extends Omit<Message, "body"> {
+  fromAgentId: string;
+  sealed?: Sealed;
+}
+
+/** This browser as one of the signed-in user's devices, set up once they've signed in (LLD 15.11). */
+let device: Promise<Device> | undefined;
+const lobbyKeys = new Map<string, CryptoKey>(); // "<lobbyId>/<epoch>"
+
+function useDevice(me: Me): void {
+  if (!me.userId) return;
+  const register = async (boxPublicKey: string) => {
+    const name = `Web browser (${navigator.platform || "unknown"})`;
+    return (await send<{ machineId: string }>("POST", "/v1/me/devices", { boxPublicKey, name })).machineId;
+  };
+  device = ensureDevice(me.userId, register);
+}
+
+/** The lobby key for an epoch, opened with this browser's device key; undefined until a member machine has shared it. */
+async function lobbyKey(lobbyId: string, epoch: number): Promise<CryptoKey | undefined> {
+  const cacheKey = `${lobbyId}/${epoch}`;
+  if (lobbyKeys.has(cacheKey)) return lobbyKeys.get(cacheKey);
+  if (!device) return undefined;
+  const { machineId, privateKey } = await device;
+  const sealedKeys = await request<{ epoch: number; sealed: string }[]>(`/v1/lobbies/${lobbyId}/keys?device=${machineId}`);
+  for (const k of sealedKeys) {
+    lobbyKeys.set(`${lobbyId}/${k.epoch}`, await openLobbyKey(privateKey, lobbyId, k.epoch, k.sealed));
+  }
+  return lobbyKeys.get(cacheKey);
+}
+
+/** Decrypts in this browser; the body stays null if the key hasn't reached this device yet or decryption fails. */
+async function readMessage(lobbyId: string, m: SealedMessage): Promise<Message> {
+  const { fromAgentId, sealed, ...message } = m;
+  if (!sealed) return { ...message, body: null };
+  try {
+    const key = await lobbyKey(lobbyId, sealed.epoch);
+    if (!key) return { ...message, body: null };
+    const content = await decryptContent(key, { lobbyId, id: m.id, from: fromAgentId, type: m.type, epoch: sealed.epoch }, sealed);
+    return { ...message, body: content.body };
+  } catch {
+    return { ...message, body: null };
+  }
+}
+
 const relay = {
-  me: () => request<Me>("/v1/me").catch(() => null),
+  async me(): Promise<Me | null> {
+    try {
+      const me = await request<Me>("/v1/me");
+      useDevice(me);
+      return me;
+    } catch {
+      return null;
+    }
+  },
   async lobbies(): Promise<Lobby[]> {
     const lobbies = await request<RelayLobby[]>("/v1/lobbies");
     return lobbies.map((l) => ({ lobbyId: l.lobbyId, name: l.name, myRole: SEAT_ROLE[l.role], connection: "live", keyEpoch: l.keyEpoch, roster: l.roster }));
@@ -139,8 +196,8 @@ const relay = {
     return machines.flatMap((m) => m.agents.map((a) => ({ ...a, cwd: "", online: m.online && a.online, machineId: m.machineId, machine: m.name })));
   },
   async messages(lobbyId: string): Promise<Message[]> {
-    const metadata = await request<Omit<Message, "body">[]>(`/v1/lobbies/${lobbyId}/events`);
-    return metadata.map((m) => ({ ...m, body: null }));
+    const sealed = await request<SealedMessage[]>(`/v1/lobbies/${lobbyId}/events`);
+    return Promise.all(sealed.map((m) => readMessage(lobbyId, m)));
   },
   createLobby: (name: string) => send<{ lobbyId: string }>("POST", "/v1/lobbies", { name }),
   invite: (lobbyId: string, role: "member" | "viewer") => send<{ url: string }>("POST", `/v1/lobbies/${lobbyId}/invites`, { role }),
@@ -196,7 +253,9 @@ function subscribe(onActivity: (activity: Activity) => void, lobbyId?: string): 
   }
   if (lobbyId) {
     return liveSocket(`/v1/lobbies/${lobbyId}/watch`, (frame) => {
-      if (frame.t === "meta") onActivity({ type: "message", lobbyId, message: { ...(frame.message as Omit<Message, "body">), body: null } });
+      if (frame.t === "meta") {
+        void readMessage(lobbyId, frame.message as SealedMessage).then((message) => onActivity({ type: "message", lobbyId, message }));
+      }
       if (frame.t === "roster" || frame.t === "event") onActivity({ type: "roster", lobbyId });
     });
   }
@@ -210,5 +269,17 @@ export const api = {
   ...(isHosted ? relay : local),
   subscribe,
   invitePreview: (invite: string) => request<InvitePreview>(`/v1/invites/${invite}`),
-  signOut: () => send("POST", "/auth/logout"),
+  /** Signing out also removes this browser as a device, so it stops receiving lobby keys. */
+  async signOut(): Promise<void> {
+    if (device) {
+      try {
+        const { userId, machineId } = await device;
+        await send("DELETE", `/v1/me/devices/${machineId}`);
+        await forgetDevice(userId);
+      } catch {
+        // Signing out still works; the device just stays registered.
+      }
+    }
+    await send("POST", "/auth/logout");
+  },
 };

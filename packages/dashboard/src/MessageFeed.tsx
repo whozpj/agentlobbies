@@ -1,4 +1,4 @@
-import type { Message } from "./api";
+import { isHosted, type Message } from "./api";
 import { LockIcon } from "./ui";
 
 const TYPE_LABEL: Record<Message["type"], string> = { question: "Q", answer: "A", update: "update" };
@@ -20,7 +20,11 @@ function Thread({ message, replies }: { message: Message; replies: Map<string, M
           <time className="muted">{new Date(message.committedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
         </div>
         {message.body === null
-          ? <p className="msg-body locked"><LockIcon /> Encrypted. Run <code>agentlobbies dashboard</code> on your machine to read it.</p>
+          ? <p className="msg-body locked">
+              <LockIcon /> {isHosted
+                ? "Encrypted. Waiting for one of the lobby's machines to share the key with this browser."
+                : "Encrypted. This machine doesn't have the key yet."}
+            </p>
           : <p className="msg-body">{message.body}</p>}
         {waiting && <span className="waiting">awaiting answer</span>}
       </article>
