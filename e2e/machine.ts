@@ -11,6 +11,7 @@ import { inject } from "vitest";
 declare module "vitest" {
   export interface ProvidedContext {
     relayUrl: string;
+    publicUrl: string;
     githubUrl: string;
   }
 }
@@ -98,11 +99,21 @@ export class Machine {
     return this.cliWith({ AGENTLOBBIES_GITHUB_CLIENT_ID: `test-${this.githubUser}` }, this.home, "login", "--no-open");
   }
 
+  private readonly agents: Agent[] = [];
+
   async agent(client: "claude-code" | "codex", cwd = mkdtempSync(join(tmpdir(), `${client}-`))): Promise<Agent> {
     const transport = new StdioClientTransport({ command: bin, args: ["mcp"], cwd, env: { ...this.env, AGENTLOBBIES_CLIENT: client } });
     const mcp = new Client({ name: client, version: "1.0.0" });
     await mcp.connect(transport);
-    return new Agent(mcp, cwd);
+    const agent = new Agent(mcp, cwd);
+    this.agents.push(agent);
+    return agent;
+  }
+
+  /** Closes this machine's agents, then its daemon. Agents go first: a running agent restarts its daemon. */
+  async stop(): Promise<void> {
+    for (const agent of this.agents) await agent.mcp.close().catch(() => {});
+    await stopDaemon(this.home);
   }
 }
 

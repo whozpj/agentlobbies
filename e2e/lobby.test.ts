@@ -5,7 +5,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { Machine, machines, stopDaemon } from "./machine";
 
 afterAll(async () => {
-  for (const m of machines) await stopDaemon(m.home);
+  for (const m of machines) await m.stop();
 });
 
 describe("installed from the npm tarball", () => {

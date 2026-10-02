@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { chromium, type Browser } from "playwright";
 import { expect as pwExpect } from "playwright/test";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Machine, machines, stopDaemon } from "./machine";
+import { Machine, machines } from "./machine";
 
 const SCREENSHOTS = process.env.DASHBOARD_SCREENSHOTS;
 let browser: Browser;
@@ -15,7 +15,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await browser.close();
-  for (const m of machines) await stopDaemon(m.home);
+  for (const m of machines) await m.stop();
 });
 
 describe("dashboard in a real browser", () => {
