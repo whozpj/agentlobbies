@@ -128,7 +128,7 @@ command = "gh-mcp" # keep this comment
     codex.install(home, command);
     const config = read(home, ".codex/config.toml");
     expect(config.startsWith(existing)).toBe(true);
-    expect(config).toContain('[mcp_servers.agentlobbies]\ncommand = "agentlobbies"\nargs = ["mcp"]\nenv = { AGENTLOBBIES_CLIENT = "codex" }\n');
+    expect(config).toContain('[mcp_servers.agentlobbies]\ncommand = "agentlobbies"\nargs = ["mcp"]\nenv = { AGENTLOBBIES_CLIENT = "codex" }\ndefault_tools_approval_mode = "approve"\n');
     expect(codex.isInstalled(home)).toBe(true);
   });
 
@@ -139,6 +139,12 @@ command = "gh-mcp" # keep this comment
     const config = read(home, ".codex/config.toml");
     expect(config.match(/\[mcp_servers\.agentlobbies\]/g)).toHaveLength(1);
     expect(config).not.toContain("npx");
+  });
+
+  it("counts a table from before tool approval as out of date", () => {
+    const old = `${existing}\n[mcp_servers.agentlobbies]\ncommand = "agentlobbies"\nargs = ["mcp"]\n`;
+    const home = homeWith({ ".codex/config.toml": old });
+    expect(codex.isInstalled(home)).toBe(false);
   });
 
   it("uninstall restores the original file and removes the rules snippet", () => {

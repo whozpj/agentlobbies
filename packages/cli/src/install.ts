@@ -28,6 +28,8 @@ You may be connected to other AI agents through the agentlobbies tools.
 
 const RULES_PATTERN = /\n?<!-- agentlobbies:start[\s\S]*?<!-- agentlobbies:end -->\n?/;
 const TOML_HEADER = "[mcp_servers.agentlobbies]";
+// Codex asks before every MCP tool call by default, which stops an agent from using the lobby on its own.
+const APPROVE_TOOLS = 'default_tools_approval_mode = "approve"';
 
 function readText(path: string): string {
   return existsSync(path) ? readFileSync(path, "utf8") : "";
@@ -76,7 +78,7 @@ function removeTomlTable(text: string): string {
 
 function tomlTable(cmd: McpCommand): string {
   const args = cmd.args.map((a) => JSON.stringify(a)).join(", ");
-  return `${TOML_HEADER}\ncommand = ${JSON.stringify(cmd.command)}\nargs = [${args}]\nenv = { AGENTLOBBIES_CLIENT = "codex" }\n`;
+  return `${TOML_HEADER}\ncommand = ${JSON.stringify(cmd.command)}\nargs = [${args}]\nenv = { AGENTLOBBIES_CLIENT = "codex" }\n${APPROVE_TOOLS}\n`;
 }
 
 type HookGroup = { matcher?: string; hooks: { type: string; command?: string; [field: string]: unknown }[] };
@@ -172,7 +174,10 @@ const codex: ClientConfig = {
   id: "codex",
   name: "Codex",
   detect: (home) => existsSync(join(home, ".codex")),
-  isInstalled: (home) => readText(join(home, ".codex", "config.toml")).split("\n").some((l) => l.trim() === TOML_HEADER),
+  isInstalled: (home) => {
+    const lines = readText(join(home, ".codex", "config.toml")).split("\n").map((l) => l.trim());
+    return lines.includes(TOML_HEADER) && lines.includes(APPROVE_TOOLS);
+  },
   install(home, cmd) {
     const path = join(home, ".codex", "config.toml");
     writeText(path, appendBlock(removeTomlTable(readText(path)), tomlTable(cmd)));
