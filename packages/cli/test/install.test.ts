@@ -156,6 +156,24 @@ command = "gh-mcp" # keep this comment
     expect(read(home, ".codex/AGENTS.md")).toBe("Use tabs.\n");
   });
 
+  it("adds hooks that deliver messages and wait for them after each turn, keeping existing hooks", () => {
+    const userHooks = JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "notify-done" }] }] } });
+    const home = homeWith({ ".codex/config.toml": existing, ".codex/hooks.json": userHooks });
+    codex.install(home, command, "agentlobbies-hook");
+    codex.install(home, command, "agentlobbies-hook");
+    const { hooks } = JSON.parse(read(home, ".codex/hooks.json"));
+    expect(hooks.PostToolUse).toEqual([{ hooks: [{ type: "command", command: "agentlobbies-hook post-tool-use codex" }] }]);
+    expect(hooks.UserPromptSubmit).toEqual([{ hooks: [{ type: "command", command: "agentlobbies-hook prompt codex" }] }]);
+    expect(hooks.Stop).toEqual([
+      { hooks: [{ type: "command", command: "notify-done" }] },
+      { hooks: [{ type: "command", command: "agentlobbies-hook wait codex", timeout: 3600 }] },
+    ]);
+    expect(codex.isInstalled(home)).toBe(true);
+
+    codex.uninstall(home);
+    expect(JSON.parse(read(home, ".codex/hooks.json"))).toEqual(JSON.parse(userHooks));
+  });
+
   it("does not leave a backup when there was no config to back up", () => {
     const home = homeWith({ ".codex/AGENTS.md": "" });
     codex.install(home, command);

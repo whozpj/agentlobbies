@@ -190,11 +190,12 @@ const install = defineCommand({
     const hooks = hookCommand();
     for (const client of found) {
       client.install(homedir(), mcpCommand(), hooks);
-      const extra = client.id === "claude-code" && hooks ? ", and instant message delivery" : "";
+      const extra = hooks ? ", and instant message delivery" : "";
       console.log(`${pc.green("✓")} ${client.name}: added the agentlobbies tools and rules${extra}`);
+      if (client.id === "codex" && hooks) console.log(pc.dim("  In Codex, open /hooks once and trust the agentlobbies hooks."));
     }
     if (!hooks) {
-      console.log(pc.dim("\nFor instant message delivery in Claude Code, install globally: npm install -g agentlobbies && agentlobbies install"));
+      console.log(pc.dim("\nFor instant message delivery, install globally: npm install -g agentlobbies && agentlobbies install"));
     }
     await withLobby(async (call) => {
       if (await call("account.status")) return;

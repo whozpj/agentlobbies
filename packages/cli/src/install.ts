@@ -100,7 +100,7 @@ function withoutOurHooks(hooks: Hooks): Hooks {
  * Waiting starts when a session opens and again after each turn, so even a session that has
  * never taken a turn can be woken.
  */
-function ourHooks(hookCommand: string): Hooks {
+function claudeHooks(hookCommand: string): Hooks {
   const wait = { type: "command", command: `${hookCommand} wait`, asyncRewake: true, timeout: 3600 };
   return {
     PostToolUse: [{ hooks: [{ type: "command", command: `${hookCommand} post-tool-use` }] }],
@@ -111,17 +111,44 @@ function ourHooks(hookCommand: string): Hooks {
 }
 
 /**
+ * Codex can't wake an idle session, so its Stop hook waits for a message instead and Codex goes on
+ * with it as the next prompt. The session looks busy while it waits; pressing Esc ends the wait.
+ */
+function codexHooks(hookCommand: string): Hooks {
+  return {
+    PostToolUse: [{ hooks: [{ type: "command", command: `${hookCommand} post-tool-use codex` }] }],
+    UserPromptSubmit: [{ hooks: [{ type: "command", command: `${hookCommand} prompt codex` }] }],
+    Stop: [{ hooks: [{ type: "command", command: `${hookCommand} wait codex`, timeout: 3600 }] }],
+  };
+}
+
+/** Adds our hooks to a JSON file with a top-level "hooks" object, replacing any we added before. */
+function addHooks(path: string, ours: Hooks): void {
+  const file = JSON.parse(readText(path) || "{}");
+  const hooks = withoutOurHooks(file.hooks ?? {});
+  for (const [event, groups] of Object.entries(ours)) {
+    hooks[event] = (hooks[event] ?? []).concat(groups);
+  }
+  file.hooks = hooks;
+  writeText(path, JSON.stringify(file, null, 2));
+}
+
+function removeHooks(path: string): void {
+  const file = JSON.parse(readText(path) || "{}");
+  if (!file.hooks) return;
+  file.hooks = withoutOurHooks(file.hooks);
+  if (Object.keys(file.hooks).length === 0) delete file.hooks;
+  writeText(path, JSON.stringify(file, null, 2));
+}
+
+/**
  * False when some of our hooks are installed but not all of them: an install from an older version
  * that should be updated. No hooks at all is fine (an install through npx can't have them).
  */
-function hooksComplete(home: string): boolean {
-  const settings = JSON.parse(readText(join(home, ".claude", "settings.json")) || "{}");
-  const hooks: Hooks = settings.hooks ?? {};
-  let found = 0;
-  const events = Object.keys(ourHooks("agentlobbies-hook"));
-  for (const event of events) {
-    if ((hooks[event] ?? []).some(isOurs)) found++;
-  }
+function hooksComplete(path: string, ours: Hooks): boolean {
+  const hooks: Hooks = JSON.parse(readText(path) || "{}").hooks ?? {};
+  const events = Object.keys(ours);
+  const found = events.filter((event) => (hooks[event] ?? []).some(isOurs)).length;
   return found === 0 || found === events.length;
 }
 
@@ -129,7 +156,9 @@ const claudeCode: ClientConfig = {
   id: "claude-code",
   name: "Claude Code",
   detect: (home) => existsSync(join(home, ".claude.json")) || existsSync(join(home, ".claude")),
-  isInstalled: (home) => Boolean(JSON.parse(readText(join(home, ".claude.json")) || "{}").mcpServers?.agentlobbies) && hooksComplete(home),
+  isInstalled: (home) =>
+    Boolean(JSON.parse(readText(join(home, ".claude.json")) || "{}").mcpServers?.agentlobbies) &&
+    hooksComplete(join(home, ".claude", "settings.json"), claudeHooks("agentlobbies-hook")),
   install(home, cmd, hookCommand) {
     const path = join(home, ".claude.json");
     const config = JSON.parse(readText(path) || "{}");
@@ -138,17 +167,7 @@ const claudeCode: ClientConfig = {
     const rules = join(home, ".claude", "CLAUDE.md");
     writeText(rules, addRules(readText(rules)));
 
-    if (hookCommand) {
-      const settingsPath = join(home, ".claude", "settings.json");
-      const settings = JSON.parse(readText(settingsPath) || "{}");
-      const hooks = withoutOurHooks(settings.hooks ?? {});
-      for (const [event, groups] of Object.entries(ourHooks(hookCommand))) {
-        const existing = hooks[event] ?? [];
-        hooks[event] = existing.concat(groups);
-      }
-      settings.hooks = hooks;
-      writeText(settingsPath, JSON.stringify(settings, null, 2));
-    }
+    if (hookCommand) addHooks(join(home, ".claude", "settings.json"), claudeHooks(hookCommand));
   },
   uninstall(home) {
     const path = join(home, ".claude.json");
@@ -159,14 +178,7 @@ const claudeCode: ClientConfig = {
     }
     const rules = join(home, ".claude", "CLAUDE.md");
     if (existsSync(rules)) writeText(rules, readText(rules).replace(RULES_PATTERN, ""));
-
-    const settingsPath = join(home, ".claude", "settings.json");
-    const settings = JSON.parse(readText(settingsPath) || "{}");
-    if (settings.hooks) {
-      settings.hooks = withoutOurHooks(settings.hooks);
-      if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
-      writeText(settingsPath, JSON.stringify(settings, null, 2));
-    }
+    removeHooks(join(home, ".claude", "settings.json"));
   },
 };
 
@@ -176,19 +188,22 @@ const codex: ClientConfig = {
   detect: (home) => existsSync(join(home, ".codex")),
   isInstalled: (home) => {
     const lines = readText(join(home, ".codex", "config.toml")).split("\n").map((l) => l.trim());
-    return lines.includes(TOML_HEADER) && lines.includes(APPROVE_TOOLS);
+    return lines.includes(TOML_HEADER) && lines.includes(APPROVE_TOOLS) &&
+      hooksComplete(join(home, ".codex", "hooks.json"), codexHooks("agentlobbies-hook"));
   },
-  install(home, cmd) {
+  install(home, cmd, hookCommand) {
     const path = join(home, ".codex", "config.toml");
     writeText(path, appendBlock(removeTomlTable(readText(path)), tomlTable(cmd)));
     const rules = join(home, ".codex", "AGENTS.md");
     writeText(rules, addRules(readText(rules)));
+    if (hookCommand) addHooks(join(home, ".codex", "hooks.json"), codexHooks(hookCommand));
   },
   uninstall(home) {
     const path = join(home, ".codex", "config.toml");
     if (existsSync(path)) writeText(path, removeTomlTable(readText(path)));
     const rules = join(home, ".codex", "AGENTS.md");
     if (existsSync(rules)) writeText(rules, readText(rules).replace(RULES_PATTERN, ""));
+    removeHooks(join(home, ".codex", "hooks.json"));
   },
 };
 

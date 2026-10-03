@@ -1,6 +1,6 @@
 import { openSession, type Session } from "@agentlobbies/daemon/client";
 import { spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
@@ -8,12 +8,13 @@ import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
 const HOOK = join(import.meta.dirname, "../dist/hook.js");
 const home = mkdtempSync(join("/tmp", "al-hook-"));
 const webDir = mkdtempSync(join(tmpdir(), "web-"));
+const apiDir = mkdtempSync(join(tmpdir(), "api-"));
 let web: Session;
 let api: Session;
 
-function runHook(event: string, input: Record<string, unknown>): Promise<{ code: number; stdout: string; stderr: string }> {
+function runHook(event: string, input: Record<string, unknown>, client?: string): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [HOOK, event], { env: { ...process.env, AGENTLOBBIES_HOME: home } });
+    const child = spawn(process.execPath, [HOOK, event, ...(client ? [client] : [])], { env: { ...process.env, AGENTLOBBIES_HOME: home } });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d) => (stdout += d));
@@ -39,7 +40,7 @@ beforeAll(async () => {
   process.env.AGENTLOBBIES_RELAY_URL = inject("relayUrl");
   web = await openSession({ client: "claude-code", cwd: webDir, home });
   await web.call("account.login", { githubToken: `gho_fake_tester.${Math.random().toString(36).slice(2, 10)}` });
-  api = await openSession({ client: "codex", cwd: mkdtempSync(join(tmpdir(), "api-")), home });
+  api = await openSession({ client: "codex", cwd: apiDir, home });
   ({ lobbyId } = await web.call("lobby.create", { name: "hooks" }));
   await addToLobby((await web.call("session.open", { client: "claude-code", cwd: webDir })).seatKey, "web");
   await addToLobby((await api.call("agents.list")).find((a: { client: string }) => a.client === "codex").seatKey, "api");
@@ -105,6 +106,22 @@ describe("agentlobbies-hook", () => {
     const r = await waiting;
     expect(r.code).toBe(2);
     expect(r.stderr).toContain("are you there?");
+  });
+
+  it("wakes a Codex agent the same way, with the message as its next prompt", async () => {
+    const waiting = runHook("wait", { cwd: apiDir }, "codex");
+    await new Promise((r) => setTimeout(r, 500));
+    await web.call("message.send", { to: "api", type: "question", body: "hello codex" });
+    const r = await waiting;
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("hello codex");
+  });
+
+  it("doesn't wait in a `codex exec` run, which has to finish", async () => {
+    const transcript = join(home, "rollout.jsonl");
+    writeFileSync(transcript, `${JSON.stringify({ type: "session_meta", payload: { source: "exec" } })}\n`);
+    const r = await runHook("wait", { cwd: apiDir, transcript_path: transcript }, "codex");
+    expect(r).toEqual({ code: 0, stdout: "", stderr: "" });
   });
 
   it("keeps waiting through a daemon restart, such as an upgrade, and still wakes the agent", async () => {
