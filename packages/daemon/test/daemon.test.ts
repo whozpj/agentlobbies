@@ -15,7 +15,8 @@ async function startDaemon(home = mkdtempSync(join(tmpdir(), "al-home-")), login
   const daemon = new Daemon({ home, relayUrl });
   await daemon.start();
   running.push(daemon);
-  await daemon.call("account.login", { githubToken: freshUser(login) });
+  // A restarted daemon is still signed in, as the same person.
+  if (!(await daemon.call("account.status", {}))) await daemon.call("account.login", { githubToken: freshUser(login) });
   return daemon;
 }
 

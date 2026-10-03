@@ -4,7 +4,7 @@ import {
 } from "@agentlobbies/protocol";
 import { DurableObject } from "cloudflare:workers";
 import { headSeq, pageFor } from "./lobby/events";
-import { currentEpoch, keysFrame, markRotate, memberMachines, putKeys, type Machine } from "./lobby/keys";
+import { currentEpoch, keysFrame, markRotate, memberMachines, putKeys, rotateNeeded, type Machine } from "./lobby/keys";
 import {
   admit, getAgent, initLobby, isActive, removeFromLobby, roleOf, roster, updateProfile, type AdmitResult, type NewAgent,
 } from "./lobby/membership";
@@ -29,6 +29,7 @@ interface SocketAttachment {
   lastPresenceAt?: number;
   machineId?: string; // verified by the Worker from the account token (LLD 15.3)
   watcher?: Watcher;
+  sessionId?: string; // a watcher's browser sign-in
 }
 
 const PROTOCOL = "agentlobbies.v1";
@@ -74,14 +75,15 @@ export class LobbyDurableObject extends DurableObject<Env> {
     return { roster: roster(this.ctx.storage), keyEpoch: currentEpoch(this.ctx.storage.sql) };
   }
 
-  async verifySeat(agentId: string, ts: number, sig: string): Promise<{ role: Role } | { error: "unauthorized" | "kicked" }> {
+  /** Checks an agent's refresh signature. The Worker also checks that its machine (if known) is still signed in. */
+  async verifySeat(agentId: string, ts: number, sig: string): Promise<{ role: Role; machineId: string | null } | { error: "unauthorized" | "kicked" }> {
     const { sql } = this.ctx.storage;
     const agent = lobbyExists(sql) ? getAgent(sql, agentId) : undefined;
     if (!agent) return { error: "unauthorized" };
     if (!isActive(agent)) return { error: "kicked" };
     const lobbyId = getMeta(sql, "lobby_id")!;
     const ok = await verifyBytes(webCrypto, fromB64u(agent.public_key), refreshSigningBytes({ lobbyId, agentId, ts }), sig);
-    return ok ? { role: agent.role as Role } : { error: "unauthorized" };
+    return ok ? { role: agent.role as Role, machineId: agent.machine_id } : { error: "unauthorized" };
   }
 
   /** An agent's owner, or the lobby owner, removes an agent (LLD 14.1). */
@@ -113,15 +115,36 @@ export class LobbyDurableObject extends DurableObject<Env> {
   async removeUser(userId: string): Promise<void> {
     const { sql } = this.ctx.storage;
     if (!lobbyExists(sql)) return;
-    const agents = sql.exec<{ agent_id: string }>(
+    this.removeAgents(sql.exec<{ agent_id: string }>(
       "SELECT agent_id FROM agents WHERE owner_id = ? AND left_at IS NULL AND kicked_at IS NULL", userId,
-    ).toArray();
+    ).toArray());
+    for (const ws of this.ctx.getWebSockets(`user:${userId}`)) ws.close(4003, "removed");
+    await this.rotateKeys();
+  }
+
+  /** A device was revoked: the agents it added go, its sockets close, and the lobby key rotates. */
+  async removeMachine(machineId: string): Promise<void> {
+    const { sql } = this.ctx.storage;
+    if (!lobbyExists(sql)) return;
+    this.removeAgents(sql.exec<{ agent_id: string }>(
+      "SELECT agent_id FROM agents WHERE machine_id = ? AND left_at IS NULL AND kicked_at IS NULL", machineId,
+    ).toArray());
+    for (const ws of this.ctx.getWebSockets()) {
+      if ((ws.deserializeAttachment() as SocketAttachment | null)?.machineId === machineId) ws.close(4003, "device revoked");
+    }
+    await this.rotateKeys();
+  }
+
+  /** A browser signed out or was revoked: its watching tabs disconnect. */
+  async closeSession(sessionId: string): Promise<void> {
+    for (const ws of this.ctx.getWebSockets(`session:${sessionId}`)) ws.close(4003, "signed out");
+  }
+
+  private removeAgents(agents: { agent_id: string }[]): void {
     for (const { agent_id } of agents) {
       this.fanOut(removeFromLobby(this.ctx.storage, agent_id, Date.now()));
       for (const ws of this.ctx.getWebSockets(agent_id)) ws.close(4003, "removed");
     }
-    for (const ws of this.ctx.getWebSockets(`user:${userId}`)) ws.close(4003, "removed");
-    await this.rotateKeys();
   }
 
   /** The owner deleted the lobby: everyone is disconnected and everything stored here is erased. */
@@ -179,13 +202,14 @@ export class LobbyDurableObject extends DurableObject<Env> {
     const { sql } = this.ctx.storage;
     const open = lobbyExists(sql) && isOpen(sql);
 
-    // The object trusts these headers because only the Worker can reach it.
-    const watchUser = req.headers.get("X-Watch-User");
-    if (watchUser) {
-      this.ctx.acceptWebSocket(server, ["watch", `user:${watchUser}`]);
+    // Only the Worker reaches this object, and it builds these requests itself after checking who is asking.
+    if (new URL(req.url).pathname === "/watch") {
+      const userId = req.headers.get("X-Watch-User") ?? "";
+      const sessionId = req.headers.get("X-Session-Id") ?? "";
+      this.ctx.acceptWebSocket(server, ["watch", `user:${userId}`, `session:${sessionId}`]);
       if (!open) server.close(4010, "lobby closed");
-      const watcher = { userId: watchUser, isOwner: req.headers.get("X-Watch-Owner") === "1" };
-      server.serializeAttachment({ agentId: "", state: "live", connectedAt: Date.now(), watcher } satisfies SocketAttachment);
+      const watcher = { userId, isOwner: req.headers.get("X-Watch-Owner") === "1" };
+      server.serializeAttachment({ agentId: "", state: "live", connectedAt: Date.now(), watcher, sessionId } satisfies SocketAttachment);
       return new Response(null, { status: 101, webSocket: client });
     }
 
@@ -198,11 +222,19 @@ export class LobbyDurableObject extends DurableObject<Env> {
       return new Response(null, { status: 101, webSocket: client, headers });
     }
 
-    for (const old of this.ctx.getWebSockets(agentId)) old.close(4009, "replaced");
-
     // The machine counts only if it belongs to the agent's owner (LLD 15.3).
     const machineId = req.headers.get("X-Machine-Id");
     const sameOwner = machineId !== null && agent.owner_id === req.headers.get("X-User-Id");
+    // An agent connects only from one of its owner's signed-in machines, and belongs to the last one it
+    // connected from: revoking that machine removes it (signing in again on a machine gives it a new id).
+    if (agent.owner_id !== null && !sameOwner) {
+      this.ctx.acceptWebSocket(server);
+      server.close(4001, "connect from one of your signed-in machines");
+      return new Response(null, { status: 101, webSocket: client, headers });
+    }
+    if (sameOwner && agent.machine_id !== machineId) sql.exec("UPDATE agents SET machine_id = ? WHERE agent_id = ?", machineId, agentId);
+
+    for (const old of this.ctx.getWebSockets(agentId)) old.close(4009, "replaced");
     const attachment: SocketAttachment = { agentId, state: "awaiting_hello", connectedAt: Date.now() };
     if (sameOwner) attachment.machineId = machineId;
     this.ctx.acceptWebSocket(server, [agentId]);
@@ -211,8 +243,8 @@ export class LobbyDurableObject extends DurableObject<Env> {
   }
 
   async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
-    const att = ws.deserializeAttachment() as SocketAttachment;
-    if (att.watcher) return; // watchers only listen
+    const att = ws.deserializeAttachment() as SocketAttachment | null;
+    if (!att || att.watcher) return; // refused sockets have no attachment; watchers only listen
     if (typeof raw !== "string" || new TextEncoder().encode(raw).length > LIMITS.maxFrameBytes) {
       return ws.close(4000, "bad frame");
     }
@@ -311,6 +343,11 @@ export class LobbyDurableObject extends DurableObject<Env> {
     if (e.lobbyId !== getMeta(sql, "lobby_id") || e.from !== att.agentId) return this.sendErr(ws, frame.reqId, "lobby_mismatch");
     if (roleOf(sql, att.agentId) === "observer") return this.sendErr(ws, frame.reqId, "forbidden");
     if (e.v !== 2) return this.sendErr(ws, frame.reqId, "bad_request", "messages must be end-to-end encrypted; update agentlobbies");
+    // After someone leaves, nothing more goes out under a key they had: wait for the new one.
+    const epoch = currentEpoch(sql);
+    if (epoch > 0 && (rotateNeeded(sql) || e.sealed!.epoch < epoch)) {
+      return this.sendErr(ws, frame.reqId, "key_rotating", "the lobby is switching to a new key; try again in a moment", 2_000);
+    }
 
     const publicKey = getAgent(sql, att.agentId)?.public_key;
     if (!publicKey || !(await verifyEnvelope(webCrypto, fromB64u(publicKey), e))) {
@@ -369,8 +406,8 @@ export class LobbyDurableObject extends DurableObject<Env> {
     const observersSeeDirects = getSettings(sql).observersSeeDirects;
     const frame = JSON.stringify({ t: "event", event } satisfies ServerFrame);
     for (const ws of this.ctx.getWebSockets()) {
-      const att = ws.deserializeAttachment() as SocketAttachment;
-      if (att.state !== "live") continue; // replaying sockets get it from the next page
+      const att = ws.deserializeAttachment() as SocketAttachment | null;
+      if (att?.state !== "live") continue; // replaying sockets get it from the next page
       if (att.watcher) {
         this.sendToWatcher(ws, att.watcher, event);
         continue;
@@ -436,8 +473,8 @@ export class LobbyDurableObject extends DurableObject<Env> {
   private broadcastKeys(machines: Machine[]): void {
     const { sql } = this.ctx.storage;
     for (const ws of this.ctx.getWebSockets()) {
-      const att = ws.deserializeAttachment() as SocketAttachment;
-      if (att.watcher || !att.helloAt) continue;
+      const att = ws.deserializeAttachment() as SocketAttachment | null;
+      if (!att || att.watcher || !att.helloAt) continue;
       this.trySend(ws, JSON.stringify(keysFrame(sql, att.machineId, machines)));
     }
   }
@@ -459,7 +496,7 @@ export class LobbyDurableObject extends DurableObject<Env> {
     if (!agent) return;
     const frame = JSON.stringify({ t: "roster", agent } satisfies ServerFrame);
     for (const ws of this.ctx.getWebSockets()) {
-      if ((ws.deserializeAttachment() as SocketAttachment).state === "live") this.trySend(ws, frame);
+      if ((ws.deserializeAttachment() as SocketAttachment | null)?.state === "live") this.trySend(ws, frame);
     }
   }
 

@@ -110,6 +110,10 @@ export class Daemon extends EventEmitter {
   private dashboard: Dashboard | undefined;
   private userLink: UserLink | undefined;
   private syncing: Promise<void> = Promise.resolve();
+  /** Each lobby's people, as the relay lists them (members needn't have a seat on this machine). */
+  private readonly people = new Map<string, LobbyPerson[]>();
+  /** Lobbies whose key must change (someone left) before anything more is sent. */
+  private readonly rotating = new Set<string>();
 
   constructor(private readonly opts: { home: string; relayUrl: string; dashboardDir?: string }) {
     super();
@@ -440,6 +444,7 @@ export class Daemon extends EventEmitter {
           connection,
           keyEpoch: this.db.latestLobbyKey(lobbyId)?.epoch ?? 0,
           roster,
+          people: this.people.get(lobbyId) ?? peopleFromRoster(roster),
         };
       });
     },
@@ -486,7 +491,7 @@ export class Daemon extends EventEmitter {
   };
 
 
-  private async sendMessage(seat: Seat, p: Params): Promise<{ id: string; seq?: number; queued?: boolean }> {
+  private async sendMessage(seat: Seat, p: Params, retried = false): Promise<{ id: string; seq?: number; queued?: boolean }> {
     const body = String(p.body ?? "");
     const attachments = (p.attachments ?? undefined) as Envelope["attachments"];
     const texts = [body];
@@ -534,6 +539,11 @@ export class Daemon extends EventEmitter {
 
     const reply = await this.waitForReply(reqId);
     if (!reply) return { id: envelope.id, queued: true };
+    // Someone just left and the new key hadn't reached this machine: write it again under the new key.
+    if (reply.t === "err" && reply.code === "key_rotating" && !retried) {
+      await new Promise((resolve) => setTimeout(resolve, reply.retryAfterMs ?? 1_000));
+      return this.sendMessage(seat, p, true);
+    }
     if (reply.t === "err") throw new DaemonError(reply.code, reply.message);
     return { id: envelope.id, seq: reply.seq };
   }
@@ -942,7 +952,10 @@ export class Daemon extends EventEmitter {
   private async addMissingPersonSeats(): Promise<void> {
     const account = this.db.account();
     if (!account) return;
-    const lobbies = await this.relay<{ lobbyId: string; name: string | null }[]>("/v1/lobbies", undefined, await this.accountToken(), "GET");
+    const lobbies = await this.relay<{ lobbyId: string; name: string | null; people: LobbyPerson[] }[]>("/v1/lobbies", undefined, await this.accountToken(), "GET");
+    this.people.clear();
+    for (const lobby of lobbies) this.people.set(lobby.lobbyId, lobby.people);
+    this.emit("activity", { type: "lobbies" });
     let added = false;
     for (const lobby of lobbies) {
       if (this.db.activeSeatIn(PERSON, lobby.lobbyId)) continue;
@@ -977,6 +990,9 @@ export class Daemon extends EventEmitter {
     }
     this.unlockMessages(lobbyId);
 
+    if (frame.current > 0 && frame.rotate) this.rotating.add(lobbyId);
+    else this.rotating.delete(lobbyId);
+
     // Every seat in the lobby gets this frame; one of them does the work for this machine.
     const seatsHere = this.db.activeSeats().filter((s) => s.lobby_id === lobbyId);
     if (this.viewSeat(seatsHere).seat_id !== seat.seat_id) return;
@@ -987,7 +1003,8 @@ export class Daemon extends EventEmitter {
       const key = newLobbyKey();
       const sealed = [];
       for (const machine of frame.machines) {
-        sealed.push({ machineId: machine.machineId, sealed: await sealLobbyKey(machine.boxPublicKey, lobbyId, epoch, key) });
+        const one = await sealFor(machine, lobbyId, epoch, key);
+        if (one) sealed.push(one);
       }
       conn.send({ t: "keys.put", reqId: ulid(), epoch, create: true, sealed });
       return;
@@ -1000,8 +1017,10 @@ export class Daemon extends EventEmitter {
       for (const epoch of epochs) {
         const key = this.db.lobbyKey(lobbyId, epoch);
         if (!key) continue;
+        const one = await sealFor(machine, lobbyId, epoch, key);
+        if (!one) continue;
         if (!byEpoch.has(epoch)) byEpoch.set(epoch, []);
-        byEpoch.get(epoch)!.push({ machineId, sealed: await sealLobbyKey(machine.boxPublicKey, lobbyId, epoch, key) });
+        byEpoch.get(epoch)!.push(one);
       }
     }
     for (const [epoch, sealed] of byEpoch) conn.send({ t: "keys.put", reqId: ulid(), epoch, create: false, sealed });
@@ -1039,12 +1058,18 @@ export class Daemon extends EventEmitter {
     if (seatsWithNew.size > 0) this.emit("activity", { type: "roster", lobbyId });
   }
 
-  /** The newest lobby key, waiting briefly for one in a lobby that was just created or joined. */
+  /**
+   * The newest lobby key, waiting briefly for one in a lobby that was just created or joined, or that
+   * is switching keys because someone left (nothing goes out under a key they had).
+   */
   private async waitForLobbyKey(lobbyId: string): Promise<{ epoch: number; key: Uint8Array }> {
     const deadline = Date.now() + KEY_WAIT_MS;
     for (;;) {
       const key = this.db.latestLobbyKey(lobbyId);
-      if (key) return key;
+      if (key && !this.rotating.has(lobbyId)) return key;
+      if (Date.now() > deadline && this.rotating.has(lobbyId)) {
+        throw new DaemonError("key_rotating", "This lobby is switching to a new encryption key after someone left. Try again in a moment.");
+      }
       if (Date.now() > deadline) {
         throw new DaemonError("waiting_for_key",
           "This lobby's encryption key hasn't reached this machine yet. It arrives as soon as another member's machine is online.");
@@ -1134,5 +1159,31 @@ export class Daemon extends EventEmitter {
     const json = (text ? JSON.parse(text) : {}) as T & { error?: { code: string; message: string } };
     if (!res.ok) throw new DaemonError(json.error?.code ?? "relay_error", json.error?.message ?? `relay returned ${res.status}`);
     return json;
+  }
+}
+
+/** One person in a lobby, from the relay's membership list. */
+interface LobbyPerson {
+  login: string;
+  avatarUrl: string;
+  role: "owner" | "member" | "viewer";
+}
+
+/** Until the relay's list arrives (offline, or not synced yet), the people with a seat in the roster. */
+function peopleFromRoster(roster: AgentProfile[]): LobbyPerson[] {
+  const role = { host: "owner", member: "member", observer: "viewer" } as const;
+  const byLogin = new Map<string, LobbyPerson>();
+  for (const seat of roster) {
+    if (seat.client === "cli" && seat.owner) byLogin.set(seat.owner.login, { ...seat.owner, role: role[seat.role] });
+  }
+  return [...byLogin.values()];
+}
+
+/** Seals a lobby key to one machine, or skips it if its key can't be used, so one bad key can't stop the others. */
+async function sealFor(machine: { machineId: string; boxPublicKey: string }, lobbyId: string, epoch: number, key: Uint8Array) {
+  try {
+    return { machineId: machine.machineId, sealed: await sealLobbyKey(machine.boxPublicKey, lobbyId, epoch, key) };
+  } catch {
+    return undefined;
   }
 }

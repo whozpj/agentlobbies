@@ -15,6 +15,7 @@ export default defineConfig({
           JWT_PUBLIC_KEYS: JSON.stringify({ k1: publicKey.export({ format: "pem", type: "spki" }).toString() }),
           IP_HASH_SALT: randomBytes(32).toString("hex"),
           GITHUB_CLIENT_SECRET: "test-secret",
+          ADMIN_TOKEN: "test-admin-token",
           TEST_MIGRATIONS: await readD1Migrations("./migrations/d1"),
         },
       },

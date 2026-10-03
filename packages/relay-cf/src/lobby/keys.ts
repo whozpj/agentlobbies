@@ -27,7 +27,7 @@ export function markRotate(sql: SqlStorage): void {
   setMeta(sql, "key_rotate", 1);
 }
 
-function rotateNeeded(sql: SqlStorage): boolean {
+export function rotateNeeded(sql: SqlStorage): boolean {
   return getMeta(sql, "key_rotate") === "1";
 }
 

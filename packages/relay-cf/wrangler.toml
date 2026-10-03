@@ -52,7 +52,12 @@ simple = { limit = 10, period = 60 }
 [triggers]
 crons = ["*/10 * * * *"]
 
-# Secrets (wrangler secret put): JWT_PRIVATE_KEY, JWT_PUBLIC_KEYS, IP_HASH_SALT, GITHUB_CLIENT_SECRET
+# Workers Logs: errors and request logs, kept by Cloudflare for a few days.
+[observability]
+enabled = true
+
+# Secrets (wrangler secret put): JWT_PRIVATE_KEY, JWT_PUBLIC_KEYS, IP_HASH_SALT, GITHUB_CLIENT_SECRET,
+# and optionally ADMIN_TOKEN, which enables POST /v1/admin/suspend.
 
 # Used by the daemon, MCP, and CLI integration tests, which all connect from 127.0.0.1.
 [env.test]

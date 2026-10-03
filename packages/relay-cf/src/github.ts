@@ -23,8 +23,9 @@ export async function userFromGitHub(env: Env, githubToken: string): Promise<Use
   const row = await env.DB.prepare(
     `INSERT INTO users (user_id, github_id, login, avatar_url, created_at) VALUES (?, ?, ?, ?, ?)
      ON CONFLICT (github_id) DO UPDATE SET login = excluded.login, avatar_url = excluded.avatar_url
-     RETURNING user_id`,
-  ).bind(ulid(), profile.id, profile.login, profile.avatar_url, Date.now()).first<{ user_id: string }>();
+     RETURNING user_id, suspended_at`,
+  ).bind(ulid(), profile.id, profile.login, profile.avatar_url, Date.now()).first<{ user_id: string; suspended_at: number | null }>();
+  if (row!.suspended_at !== null) throw new ProtocolError("forbidden", "this account is suspended");
   return { userId: row!.user_id, login: profile.login, avatarUrl: profile.avatar_url };
 }
 
@@ -32,6 +33,14 @@ export async function userFromGitHub(env: Env, githubToken: string): Promise<Use
 function safeReturnPath(value: string | null): string {
   if (!value || !value.startsWith("/") || value.startsWith("//") || value.startsWith("/\\")) return "/";
   return value;
+}
+
+function returnPathFrom(encoded: string | undefined): string {
+  try {
+    return safeReturnPath(decodeURIComponent(encoded ?? ""));
+  } catch {
+    return "/"; // not valid percent-encoding
+  }
 }
 
 function redirect(location: string, cookies: string[] = []): Response {
@@ -80,8 +89,11 @@ export async function finishWebSignIn(req: Request, env: Env): Promise<Response>
   } catch {
     return redirect("/?signin=failed", [clearState]);
   }
-  const session = `${SESSION_COOKIE}=${await issueWebJwt(env, user.userId)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${SESSION_SECONDS}`;
-  return redirect(safeReturnPath(decodeURIComponent(encodedReturn ?? "")), [clearState, session]);
+  const sessionId = ulid();
+  await env.DB.prepare("INSERT INTO web_sessions (session_id, user_id, created_at) VALUES (?, ?, ?)").bind(sessionId, user.userId, Date.now()).run();
+  const jwt = await issueWebJwt(env, { userId: user.userId, sessionId });
+  const session = `${SESSION_COOKIE}=${jwt}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${SESSION_SECONDS}`;
+  return redirect(returnPathFrom(encodedReturn), [clearState, session]);
 }
 
 export function signOut(): Response {

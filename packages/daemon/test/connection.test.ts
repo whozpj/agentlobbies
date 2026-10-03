@@ -5,7 +5,7 @@ import { freshUser } from "./lobby-helpers";
 
 const relayUrl = inject("relayUrl");
 
-async function hostToken(): Promise<{ lobbyId: string; token: string }> {
+async function hostToken(): Promise<{ lobbyId: string; token: string; accountToken: string }> {
   const keys = await generateSeatKeys();
   const post = (path: string, body: unknown, token?: string) => fetch(`${relayUrl}${path}`, {
     method: "POST",
@@ -16,16 +16,17 @@ async function hostToken(): Promise<{ lobbyId: string; token: string }> {
   const { lobbyId } = await post("/v1/lobbies", { name: "heartbeats" }, accountToken);
   const person = { handle: "host", client: "cli", owns: [], publicKey: toB64u(keys.publicKey) };
   const { token } = await post(`/v1/lobbies/${lobbyId}/people`, { person }, accountToken);
-  return { lobbyId, token };
+  return { lobbyId, token, accountToken };
 }
 
 describe("Connection", () => {
   it("sends heartbeats and hears the relay's pongs", async () => {
-    const { lobbyId, token } = await hostToken();
+    const { lobbyId, token, accountToken } = await hostToken();
     const states: ConnectionState[] = [];
     const conn = new Connection({
       url: `${relayUrl.replace(/^http/, "ws")}/v1/lobbies/${lobbyId}/ws`,
       token: async () => token,
+      accountToken: async () => accountToken, // an agent connects only from the machine that added it
       onRejected: () => {},
       clientVersion: "0.4.0",
       cursor: () => 0,

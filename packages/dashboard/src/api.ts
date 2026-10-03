@@ -19,6 +19,13 @@ export interface Lobby {
   connection: string;
   keyEpoch: number;
   roster: Agent[];
+  people: Person[]; // members, whether or not they have an agent or machine in the lobby
+}
+
+export interface Person {
+  login: string;
+  avatarUrl: string;
+  role: "host" | "member" | "observer";
 }
 
 export interface MyAgent {
@@ -93,14 +100,7 @@ export type Activity =
 
 export const lobbyName = (l: Lobby) => l.name ?? l.lobbyId.slice(0, 8);
 
-/** People in a lobby, once each: a person has a seat on each of their machines. */
-export function peopleIn(lobby: Lobby): Agent[] {
-  const byLogin = new Map<string, Agent>();
-  for (const seat of lobby.roster) {
-    if (seat.client === "cli" && seat.owner && !byLogin.has(seat.owner.login)) byLogin.set(seat.owner.login, seat);
-  }
-  return [...byLogin.values()];
-}
+
 
 // `agentlobbies dashboard` opens the app with a token for the local daemon. Without one, it is the hosted dashboard.
 const token = new URLSearchParams(location.search).get("token") ?? "";
@@ -121,10 +121,15 @@ function send<T>(method: string, path: string, body?: unknown): Promise<T> {
 
 const SEAT_ROLE = { owner: "host", member: "member", viewer: "observer" } as const;
 
+const toPeople = (people: RelayPerson[]): Person[] => people.map((p) => ({ ...p, role: SEAT_ROLE[p.role] }));
+
 /** The local daemon's API, used by `agentlobbies dashboard`. It can read message bodies. */
 const local = {
   me: () => request<Me | null>("/api/me"),
-  lobbies: () => request<Lobby[]>("/api/lobbies"),
+  lobbies: async () => {
+    const lobbies = await request<(Omit<Lobby, "people"> & { people: RelayPerson[] })[]>("/api/lobbies");
+    return lobbies.map((l) => ({ ...l, people: toPeople(l.people) }));
+  },
   agents: () => request<MyAgent[]>("/api/agents"),
   messages: (lobbyId: string) => request<Message[]>(`/api/lobbies/${lobbyId}/messages`),
   createLobby: (name: string) => send<{ lobbyId: string }>("POST", "/api/lobbies", { name }),
@@ -152,6 +157,13 @@ interface RelayLobby {
   role: "owner" | "member" | "viewer";
   keyEpoch: number;
   roster: Agent[];
+  people: RelayPerson[];
+}
+
+interface RelayPerson {
+  login: string;
+  avatarUrl: string;
+  role: "owner" | "member" | "viewer";
 }
 
 interface RelayMachine {
@@ -178,7 +190,8 @@ function useDevice(me: Me): void {
     const name = `Web browser (${navigator.platform || "unknown"})`;
     return (await send<{ machineId: string }>("POST", "/v1/me/devices", { boxPublicKey, name })).machineId;
   };
-  device = ensureDevice(me.userId, register);
+  const stillRegistered = async (machineId: string) => (await request<Device[]>("/v1/me/devices")).some((d) => d.deviceId === machineId);
+  device = ensureDevice(me.userId, register, stillRegistered);
 }
 
 /** The lobby key for an epoch, opened with this browser's device key; undefined until a member machine has shared it. */
@@ -220,7 +233,9 @@ const relay = {
   },
   async lobbies(): Promise<Lobby[]> {
     const lobbies = await request<RelayLobby[]>("/v1/lobbies");
-    return lobbies.map((l) => ({ lobbyId: l.lobbyId, name: l.name, myRole: SEAT_ROLE[l.role], connection: "live", keyEpoch: l.keyEpoch, roster: l.roster }));
+    return lobbies.map((l) => ({
+      lobbyId: l.lobbyId, name: l.name, myRole: SEAT_ROLE[l.role], connection: "live", keyEpoch: l.keyEpoch, roster: l.roster, people: toPeople(l.people),
+    }));
   },
   async agents(): Promise<MyAgent[]> {
     const machines = await request<RelayMachine[]>("/v1/me/agents");

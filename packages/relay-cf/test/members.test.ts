@@ -1,7 +1,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
-import { TestSocket, acceptInvite, addAgent, addPerson, api, createInvite, createLobby, fakeGitHub, member, postJson, randomIp, signIn } from "./client";
+import { TestSocket, acceptInvite, addAgent, addPerson, api, createInvite, createLobby, fakeGitHub, member, postJson, randomIp, signIn, web, webSignIn } from "./client";
 import { newAgent } from "./helpers";
 
 beforeAll(() => fakeGitHub());
@@ -164,5 +164,23 @@ describe("deleting a lobby", () => {
     const stored = await runInDurableObject(env.LOBBY.get(env.LOBBY.idFromString(lobby.lobbyId)), (_instance, state) =>
       state.storage.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '_cf%'").toArray());
     expect(stored).toEqual([]);
+  });
+});
+
+describe("people", () => {
+  it("lists every member, including one who joined only in the browser", async () => {
+    const lobby = await createLobby("people-owner");
+    const { token } = await createInvite(lobby, { role: "viewer" });
+    const cookie = await webSignIn("browser-only");
+    expect((await web("/v1/invites/accept", cookie, { method: "POST", body: { token } })).status).toBe(200);
+
+    const lobbies = await (await api("/v1/lobbies", { headers: { authorization: `Bearer ${lobby.account.token}` } }))
+      .json<{ lobbyId: string; people: { login: string; role: string }[] }[]>();
+    const people = lobbies.find((l) => l.lobbyId === lobby.lobbyId)!.people;
+    expect(people.map((p) => [p.login, p.role])).toEqual([["owner-people-owner", "owner"], ["browser-only", "viewer"]]);
+
+    expect((await api(`/v1/lobbies/${lobby.lobbyId}/members/browser-only`, { method: "DELETE", headers: { authorization: `Bearer ${lobby.account.token}` } })).status).toBe(200);
+    expect((await web("/v1/lobbies", cookie)).status).toBe(200);
+    expect(await (await web("/v1/lobbies", cookie)).json()).toEqual([]);
   });
 });

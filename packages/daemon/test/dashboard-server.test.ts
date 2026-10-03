@@ -147,4 +147,15 @@ describe("dashboard server", () => {
     expect(page.headers.get("content-security-policy")).toContain("script-src 'self'");
     expect((await get(base, "/../../etc/passwd")).body).not.toContain("root:");
   });
+
+  it("answers malformed requests with an error and keeps running", async () => {
+    const { base, daemon } = await setup();
+    expect((await fetch(new URL("/%ZZ", base))).status).toBe(400);
+    const notJson = await fetch(new URL(`/api/lobbies${base.search}`, base), { method: "POST", body: "{nope" });
+    expect(notJson.status).toBe(400);
+    const tooBig = await fetch(new URL(`/api/lobbies${base.search}`, base), { method: "POST", body: "x".repeat(300 * 1024) }).catch(() => undefined);
+    expect(tooBig?.status ?? 400).toBe(400);
+    expect(await daemon.call("daemon.info", {})).toBeDefined();
+    expect((await fetch(new URL(`/api/lobbies${base.search}`, base))).status).toBe(200);
+  });
 });

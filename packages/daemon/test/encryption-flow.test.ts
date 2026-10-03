@@ -65,4 +65,18 @@ describe("end-to-end encryption between machines", () => {
     await alice.person("message.send", { lobbyId, to: "all", type: "update", body: "bob can't read this" });
     expect(await bob.daemon.call("dashboard.lobbies", {})).toEqual([]);
   });
+
+  it("sends a message written right after someone leaves under the new key, never the old one", async () => {
+    const alice = await startDaemon(freshUser("alice"));
+    const { lobbyId } = await alice.daemon.call("lobby.create", { name: "no-stale-key" });
+    const bob = await startDaemon(freshUser("bob"));
+    const { url } = await alice.daemon.call("invite.create", { lobbyId });
+    await bob.daemon.call("invite.accept", { invite: url });
+    await eventually(() => bob.person("lobby.status", { lobbyId }), (s) => s.keyEpoch === 1);
+
+    await alice.daemon.call("lobby.removeMember", { lobbyId, login: "bob" });
+    // The relay refuses anything under the old key, so this goes through only if it waited for the new one.
+    expect(await alice.person("message.send", { lobbyId, to: "all", type: "update", body: "right after" })).toHaveProperty("seq");
+    expect((await alice.person("lobby.status", { lobbyId })).keyEpoch).toBe(2);
+  });
 });

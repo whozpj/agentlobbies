@@ -20,10 +20,15 @@ interface AgentRow {
   owner_id: string | null;
   owner_login: string | null;
   owner_avatar: string | null;
+  machine_id: string | null;
   [key: string]: SqlStorageValue;
 }
 
-export type NewAgent = JoinProfile & { agentId: string; owner?: { userId: string; login: string; avatarUrl: string } };
+export type NewAgent = JoinProfile & {
+  agentId: string;
+  owner?: { userId: string; login: string; avatarUrl: string };
+  machineId?: string; // the machine that added it; revoking the machine an agent last connected from removes it
+};
 
 export function getAgent(sql: SqlStorage, agentId: string): AgentRow | undefined {
   return sql.exec<AgentRow>("SELECT * FROM agents WHERE agent_id = ?", agentId).toArray()[0];
@@ -60,10 +65,11 @@ export function roster(storage: DurableObjectStorage): AgentProfile[] {
 function insertAgent(storage: DurableObjectStorage, agent: NewAgent, handle: string, role: Role, now: number): { profile: AgentProfile; joined: LobbyEvent } {
   storage.sql.exec(
     `INSERT INTO agents (agent_id, handle, client, model, owns, working_on, role, public_key, joined_at, last_seen_at,
-                         owner_id, owner_login, owner_avatar)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                         owner_id, owner_login, owner_avatar, machine_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     agent.agentId, handle, agent.client, agent.model ?? null, JSON.stringify(agent.owns), agent.workingOn, role,
     agent.publicKey, now, now, agent.owner?.userId ?? null, agent.owner?.login ?? null, agent.owner?.avatarUrl ?? null,
+    agent.machineId ?? null,
   );
   const profile = toProfile(getAgent(storage.sql, agent.agentId)!);
   const joined = commit(storage, { kind: "system", system: { type: "joined", agent: profile } }, {}, now);

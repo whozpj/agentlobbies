@@ -1,7 +1,7 @@
 import { signEnvelope, webCrypto } from "@agentlobbies/protocol";
 import { ulid } from "ulid";
 import { beforeAll, describe, expect, it } from "vitest";
-import { ORIGIN, TestSocket, addAgent, addPerson, api, createInvite, createLobby, fakeGitHub, member, postJson, randomIp, signIn, web, webSignIn, type Account } from "./client";
+import { ORIGIN, TestSocket, addAgent, addPerson, api, boxKey, createInvite, createLobby, fakeGitHub, member, postJson, randomIp, signIn, web, webSignIn, type Account } from "./client";
 
 beforeAll(() => fakeGitHub());
 
@@ -268,15 +268,11 @@ describe("who can do what (security)", () => {
     expect((await remove(owner)).status).toBe(200);
   });
 
-  it("gives no keys to a socket whose machine has signed out", async () => {
+  it("removes a signed-out machine's agents, so their sockets are refused", async () => {
     const owner = await signIn("revoked");
     const lobby = await createLobby("revoked", owner);
     await postJson("/v1/auth/logout", {}, randomIp(), owner.token);
-    const ws = await TestSocket.open(lobby, owner);
-    await ws.hello();
-    const frame = await ws.next("keys");
-    expect(frame.mine).toEqual([]);
-    expect(frame.machines).toEqual([]);
+    expect(await (await TestSocket.open(lobby, owner)).closed()).toBe(4003);
   });
 
   it("gives a viewer's socket the key but no way to send", async () => {
@@ -310,7 +306,7 @@ describe("the browser as a device (LLD 15.11)", () => {
     await ownerSocket.next("keys", (f) => f.current === 1);
 
     const cookie = await webSignIn("device-owner");
-    const registered = await web("/v1/me/devices", cookie, { method: "POST", body: { boxPublicKey: "YnJvd3Nlcg", name: "Web browser" } });
+    const registered = await web("/v1/me/devices", cookie, { method: "POST", body: { boxPublicKey: await boxKey(), name: "Web browser" } });
     expect(registered.status).toBe(201);
     const { machineId } = await registered.json<{ machineId: string }>();
     const asked = await ownerSocket.next("keys", (f) => f.missing.some((m) => m.machineId === machineId));
@@ -332,7 +328,7 @@ describe("the browser as a device (LLD 15.11)", () => {
     await ownerSocket.next("keys", (f) => f.current === 1);
 
     const cookie = await webSignIn("device-leaver");
-    const { machineId } = await (await web("/v1/me/devices", cookie, { method: "POST", body: { boxPublicKey: "YnJvd3Nlcg", name: "Web browser" } })).json<{ machineId: string }>();
+    const { machineId } = await (await web("/v1/me/devices", cookie, { method: "POST", body: { boxPublicKey: await boxKey(), name: "Web browser" } })).json<{ machineId: string }>();
     expect((await web(`/v1/me/devices/${machineId}`, cookie, { method: "DELETE" })).status).toBe(200);
     const rotate = await ownerSocket.next("keys", (f) => f.rotate);
     expect(rotate.machines.map((m) => m.machineId)).not.toContain(machineId);
@@ -355,7 +351,7 @@ describe("devices", () => {
     await socket.next("keys", (f) => f.current === 1);
     const oldLaptop = await signIn("devices-user");
     const cookie = await webSignIn("devices-user");
-    await web("/v1/me/devices", cookie, { method: "POST", body: { boxPublicKey: "YnJvd3Nlcg", name: "Web browser (MacIntel)" } });
+    await web("/v1/me/devices", cookie, { method: "POST", body: { boxPublicKey: await boxKey(), name: "Web browser (MacIntel)" } });
 
     const listed = await (await api("/v1/me/devices", { headers: { authorization: `Bearer ${laptop.token}` } }))
       .json<{ deviceId: string; kind: string; current: boolean; name: string }[]>();
@@ -415,7 +411,7 @@ describe("your data", () => {
     const cookie = await webSignIn("device-spammer");
     const statuses: number[] = [];
     for (let i = 0; i < 21; i++) {
-      statuses.push((await web("/v1/me/devices", cookie, { method: "POST", body: { boxPublicKey: "YnJvd3Nlcg", name: `b${i}` } })).status);
+      statuses.push((await web("/v1/me/devices", cookie, { method: "POST", body: { boxPublicKey: await boxKey(), name: `b${i}` } })).status);
     }
     expect(statuses.slice(0, 20).every((s) => s === 201)).toBe(true);
     expect(statuses[20]).toBe(429);

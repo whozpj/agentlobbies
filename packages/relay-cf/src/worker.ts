@@ -11,6 +11,8 @@ export { LobbyDurableObject } from "./lobby-do";
 export { UserDurableObject } from "./user-do";
 
 const MAX_BODY_BYTES = 160 * 1024;
+/** The Worker builds every request it forwards to a Durable Object from scratch, at these internal URLs. */
+const INTERNAL = "https://internal";
 
 const CreateLobbyBody = z.object({ name: z.string().trim().min(1).max(64).optional() });
 const PersonBody = z.object({ person: JoinProfile });
@@ -36,15 +38,16 @@ const DeviceBody = z.object({ boxPublicKey: B64u, name: z.string().max(100) });
 type MemberRole = "owner" | "member" | "viewer";
 
 /** Per-account caps on top of the per-IP ones, so one account can't fill the relay. */
-const ACCOUNT_LIMITS = { lobbiesPerDay: 50, invitesPerDay: 200, devicesPerDay: 20 };
+const ACCOUNT_LIMITS = { lobbiesPerDay: 50, invitesPerDay: 200, devicesPerDay: 20, devices: 50 };
 const DAY_MS = 24 * 60 * 60_000;
 type Params = Record<string, string | undefined>;
 type Handler = (req: Request, env: Env, params: Params) => Promise<Response>;
 
-/** Who is making a request: a signed-in machine (daemon) has a machine id; a browser session doesn't. */
+/** Who is making a request: a signed-in machine (daemon) has a machine id; a browser has a session id. */
 interface Account extends Owner {
   userId: string;
   machineId?: string;
+  sessionId?: string;
 }
 
 const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
@@ -82,6 +85,7 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
   ["GET", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/ws" }), seatSocket],
   ["GET", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/watch" }), watchSocket],
   ["POST", new URLPattern({ pathname: "/v1/lobbies/:lobbyId/token" }), refreshToken],
+  ["POST", new URLPattern({ pathname: "/v1/admin/suspend" }), suspendAccount],
 ];
 
 export default {
@@ -105,13 +109,16 @@ export default {
 
 
 async function health(_req: Request, env: Env): Promise<Response> {
+  await env.DB.prepare("SELECT 1").first();
   return Response.json({ ok: true, minClientVersion: env.MIN_CLIENT_VERSION });
 }
 
 /** A machine signs in with a GitHub token from the device flow and gets an account token (LLD 14.2). */
 async function signInWithGitHub(req: Request, env: Env): Promise<Response> {
   const body = await parseBody(req, GitHubSignInBody);
+  if (body.boxPublicKey !== undefined) await requireBoxKey(body.boxPublicKey);
   const user = await userFromGitHub(env, body.githubToken);
+  await limitDevices(env, user.userId);
   const machineId = ulid();
   await env.DB.prepare("INSERT INTO machines (machine_id, user_id, public_key, box_public_key, name, created_at) VALUES (?, ?, ?, ?, ?, ?)")
     .bind(machineId, user.userId, body.machinePublicKey, body.boxPublicKey ?? null, body.machineName, Date.now()).run();
@@ -131,11 +138,10 @@ async function refreshAccount(req: Request, env: Env): Promise<Response> {
   return Response.json({ token: await issueAccountJwt(env, { userId: machine.user_id, machineId }) });
 }
 
-/** A machine signs out: it can't refresh any more, and its lobbies make new keys without it. */
+/** A machine signs out: it can't refresh any more, its agents leave its lobbies, and they make new keys without it. */
 async function logout(req: Request, env: Env): Promise<Response> {
   const account = await requireMachine(req, env);
-  await env.DB.prepare("UPDATE machines SET revoked_at = ? WHERE machine_id = ?").bind(Date.now(), account.machineId).run();
-  await forEachLobbyOf(env, account.userId, (lobby) => lobby.rotateKeys());
+  await revokeDevice(env, account.userId, account.machineId);
   return Response.json({});
 }
 
@@ -143,6 +149,7 @@ async function logout(req: Request, env: Env): Promise<Response> {
 async function registerBoxKey(req: Request, env: Env): Promise<Response> {
   const account = await requireMachine(req, env);
   const { boxPublicKey } = await parseBody(req, BoxKeyBody);
+  await requireBoxKey(boxPublicKey);
   await env.DB.prepare("UPDATE machines SET box_public_key = ? WHERE machine_id = ?").bind(boxPublicKey, account.machineId).run();
   await forEachLobbyOf(env, account.userId, (lobby) => lobby.refreshKeys());
   return Response.json({});
@@ -155,12 +162,14 @@ async function registerBoxKey(req: Request, env: Env): Promise<Response> {
  */
 async function addBrowserDevice(req: Request, env: Env): Promise<Response> {
   const account = await requireAccount(req, env);
-  if (account.machineId) throw new ProtocolError("forbidden", "only a browser registers this way");
-  await limitPerDay(env, "SELECT COUNT(*) AS n FROM machines WHERE user_id = ? AND created_at > ?", account.userId, ACCOUNT_LIMITS.devicesPerDay, "devices");
+  if (!account.sessionId) throw new ProtocolError("forbidden", "only a browser registers this way");
+  await limitDevices(env, account.userId);
   const { boxPublicKey, name } = await parseBody(req, DeviceBody);
+  await requireBoxKey(boxPublicKey);
   const machineId = ulid();
-  await env.DB.prepare("INSERT INTO machines (machine_id, user_id, public_key, box_public_key, name, created_at) VALUES (?, ?, '', ?, ?, ?)")
-    .bind(machineId, account.userId, boxPublicKey, name, Date.now()).run();
+  await env.DB.prepare(
+    "INSERT INTO machines (machine_id, user_id, public_key, box_public_key, name, created_at, session_id) VALUES (?, ?, '', ?, ?, ?, ?)",
+  ).bind(machineId, account.userId, boxPublicKey, name, Date.now(), account.sessionId).run();
   await forEachLobbyOf(env, account.userId, (lobby) => lobby.refreshKeys());
   return Response.json({ machineId }, { status: 201 });
 }
@@ -169,14 +178,14 @@ async function addBrowserDevice(req: Request, env: Env): Promise<Response> {
 async function listDevices(req: Request, env: Env): Promise<Response> {
   const account = await requireAccount(req, env);
   const { results } = await env.DB.prepare(
-    "SELECT machine_id, name, public_key, created_at FROM machines WHERE user_id = ? AND revoked_at IS NULL ORDER BY created_at DESC",
-  ).bind(account.userId).all<{ machine_id: string; name: string; public_key: string; created_at: number }>();
+    "SELECT machine_id, name, public_key, created_at, session_id FROM machines WHERE user_id = ? AND revoked_at IS NULL ORDER BY created_at DESC",
+  ).bind(account.userId).all<{ machine_id: string; name: string; public_key: string; created_at: number; session_id: string | null }>();
   return Response.json(results.map((d) => ({
     deviceId: d.machine_id,
     name: d.name,
     kind: d.public_key === "" ? "browser" : "machine", // a browser has no signing key
     createdAt: d.created_at,
-    current: d.machine_id === account.machineId,
+    current: d.machine_id === account.machineId || (d.session_id !== null && d.session_id === account.sessionId),
   })));
 }
 
@@ -186,13 +195,35 @@ async function listDevices(req: Request, env: Env): Promise<Response> {
  */
 async function removeDevice(req: Request, env: Env, params: Params): Promise<Response> {
   const account = await requireAccount(req, env);
-  const result = await env.DB.prepare("UPDATE machines SET revoked_at = ? WHERE machine_id = ? AND user_id = ? AND revoked_at IS NULL")
-    .bind(Date.now(), params.machineId, account.userId).run();
-  if (result.meta.changes > 0) {
-    await userStub(env, account.userId).revokeMachine(params.machineId!);
-    await forEachLobbyOf(env, account.userId, (lobby) => lobby.rotateKeys());
-  }
+  const device = await env.DB.prepare("SELECT session_id FROM machines WHERE machine_id = ? AND user_id = ? AND revoked_at IS NULL")
+    .bind(params.machineId, account.userId).first<{ session_id: string | null }>();
+  if (!device) return Response.json({});
+  // A browser's sign-in ends with its device, so it can't simply register a new one.
+  if (device.session_id) await endWebSession(env, account.userId, device.session_id);
+  else await revokeDevice(env, account.userId, params.machineId!);
   return Response.json({});
+}
+
+/**
+ * Revokes a machine or browser device: it can't sign in or receive keys any more, its agents leave
+ * every lobby (enforced here, so a stolen device can't ignore it), and the lobbies make new keys.
+ */
+async function revokeDevice(env: Env, userId: string, machineId: string): Promise<void> {
+  await env.DB.prepare("UPDATE machines SET revoked_at = ? WHERE machine_id = ? AND user_id = ? AND revoked_at IS NULL")
+    .bind(Date.now(), machineId, userId).run();
+  await userStub(env, userId).revokeMachine(machineId);
+  await forEachLobbyOf(env, userId, (lobby) => lobby.removeMachine(machineId));
+}
+
+/** Ends a browser sign-in: the cookie stops working, its devices are revoked, and its open tabs are disconnected. */
+async function endWebSession(env: Env, userId: string, sessionId: string): Promise<void> {
+  await env.DB.prepare("UPDATE web_sessions SET revoked_at = ? WHERE session_id = ? AND user_id = ? AND revoked_at IS NULL")
+    .bind(Date.now(), sessionId, userId).run();
+  const { results: devices } = await env.DB.prepare("SELECT machine_id FROM machines WHERE session_id = ? AND user_id = ? AND revoked_at IS NULL")
+    .bind(sessionId, userId).all<{ machine_id: string }>();
+  for (const device of devices) await revokeDevice(env, userId, device.machine_id);
+  await userStub(env, userId).closeSession(sessionId);
+  await forEachLobbyOf(env, userId, (lobby) => lobby.closeSession(sessionId));
 }
 
 /** The lobby keys sealed to one of the caller's own devices. */
@@ -208,6 +239,8 @@ async function browserKeys(req: Request, env: Env, params: Params): Promise<Resp
 
 async function webLogout(req: Request, env: Env): Promise<Response> {
   requireSameOrigin(req, env);
+  const session = await webSession(req, env);
+  if (session) await endWebSession(env, session.userId, session.sessionId);
   return signOut();
 }
 
@@ -238,11 +271,8 @@ async function machineSocket(req: Request, env: Env): Promise<Response> {
   if (!account?.machineId) throw new ProtocolError("login_required");
   const machine = await env.DB.prepare("SELECT name FROM machines WHERE machine_id = ?").bind(account.machineId).first<{ name: string }>();
 
-  const headers = new Headers(req.headers);
-  headers.set("X-Machine-Id", account.machineId);
-  headers.set("X-Machine-Name", machine?.name ?? "unknown");
-  headers.delete("Sec-WebSocket-Protocol");
-  const res = await userStub(env, account.userId).fetch(new Request(req.url, { headers }));
+  const headers = { Upgrade: "websocket", "X-Machine-Id": account.machineId, "X-Machine-Name": machine?.name ?? "unknown" };
+  const res = await userStub(env, account.userId).fetch(new Request(`${INTERNAL}/machine`, { headers }));
   return new Response(null, { status: 101, webSocket: res.webSocket, headers: { "Sec-WebSocket-Protocol": "agentlobbies.v1" } });
 }
 
@@ -251,18 +281,35 @@ async function browserSocket(req: Request, env: Env): Promise<Response> {
   if (req.headers.get("Upgrade") !== "websocket") throw new ProtocolError("bad_request", "expected a websocket upgrade");
   requireSameOrigin(req, env);
   const account = await requireAccount(req, env);
-  const headers = new Headers(req.headers);
-  headers.delete("X-Machine-Id");
-  return userStub(env, account.userId).fetch(new Request(req.url, { headers }));
+  if (!account.sessionId) throw new ProtocolError("forbidden");
+  const headers = { Upgrade: "websocket", "X-Session-Id": account.sessionId };
+  return userStub(env, account.userId).fetch(new Request(`${INTERNAL}/web`, { headers }));
 }
 
+/** The caller's lobbies, each with its people (members exist whether or not they have a machine or agent there). */
 async function listLobbies(req: Request, env: Env): Promise<Response> {
   const account = await requireAccount(req, env);
   const lobbies = await lobbiesOf(env, account.userId);
   const result = await Promise.all(lobbies.map(async (l) => ({
-    lobbyId: l.lobby_id, name: l.name, role: l.role, ...(await lobbyStub(env, l.lobby_id).summary()),
+    lobbyId: l.lobby_id, name: l.name, role: l.role, people: await peopleOf(env, l.lobby_id), ...(await lobbyStub(env, l.lobby_id).summary()),
   })));
   return Response.json(result);
+}
+
+async function peopleOf(env: Env, lobbyId: string): Promise<{ login: string; avatarUrl: string; role: MemberRole }[]> {
+  const { results } = await env.DB.prepare(
+    `SELECT u.login, u.avatar_url AS avatarUrl, lm.role FROM lobby_members lm JOIN users u ON u.user_id = lm.user_id
+     WHERE lm.lobby_id = ? ORDER BY lm.added_at`,
+  ).bind(lobbyId).all<{ login: string; avatarUrl: string; role: MemberRole }>();
+  return results;
+}
+
+/** Tells every member's machines and tabs that the lobby's people changed. */
+async function notifyMembers(env: Env, lobbyId: string, alsoUserId?: string): Promise<void> {
+  const { results } = await env.DB.prepare("SELECT user_id FROM lobby_members WHERE lobby_id = ?").bind(lobbyId).all<{ user_id: string }>();
+  const userIds = new Set(results.map((r) => r.user_id));
+  if (alsoUserId) userIds.add(alsoUserId);
+  for (const userId of userIds) await userStub(env, userId).notify({ t: "lobbies" });
 }
 
 /** Creates an empty lobby owned by the caller. Their machines add their person seat when they sync (LLD 15.6). */
@@ -313,6 +360,11 @@ async function refreshToken(req: Request, env: Env, params: Params): Promise<Res
   if (Math.abs(Date.now() - ts) > TIMINGS.refreshSkewMs || !params.lobbyId) throw new ProtocolError("unauthorized");
   const result = await lobbyStub(env, params.lobbyId).verifySeat(agentId, ts, sig);
   if ("error" in result) throw new ProtocolError(result.error);
+  if (result.machineId) {
+    const machine = await env.DB.prepare("SELECT 1 AS ok FROM machines WHERE machine_id = ? AND revoked_at IS NULL")
+      .bind(result.machineId).first<{ ok: number }>();
+    if (!machine) throw new ProtocolError("unauthorized", "this agent's device was signed out");
+  }
   const token = await issueJwt(env, { sub: agentId, lobby: params.lobbyId, role: result.role });
   return Response.json({ token });
 }
@@ -359,7 +411,7 @@ async function acceptInvite(req: Request, env: Env): Promise<Response> {
   await env.DB.prepare("INSERT OR IGNORE INTO lobby_members (lobby_id, user_id, role, added_at) VALUES (?, ?, ?, ?)")
     .bind(invite.lobby_id, account.userId, invite.role, Date.now()).run();
   await lobbyStub(env, invite.lobby_id).refreshKeys();
-  await userStub(env, account.userId).notify({ t: "lobbies" });
+  await notifyMembers(env, invite.lobby_id);
   const lobby = await env.DB.prepare("SELECT name FROM lobbies WHERE lobby_id = ?").bind(invite.lobby_id).first<{ name: string | null }>();
   return Response.json({ lobbyId: invite.lobby_id, name: lobby?.name ?? null, role: invite.role });
 }
@@ -430,7 +482,7 @@ async function removeMember(req: Request, env: Env, params: Params): Promise<Res
 
   await env.DB.prepare("DELETE FROM lobby_members WHERE lobby_id = ? AND user_id = ?").bind(params.lobbyId, target.user_id).run();
   await lobbyStub(env, params.lobbyId!).removeUser(target.user_id);
-  await userStub(env, target.user_id).notify({ t: "lobbies" });
+  await notifyMembers(env, params.lobbyId!, target.user_id);
   return Response.json({});
 }
 
@@ -490,11 +542,50 @@ async function deleteAccount(req: Request, env: Env): Promise<Response> {
   await env.DB.batch([
     env.DB.prepare("DELETE FROM lobby_members WHERE user_id = ?").bind(account.userId),
     env.DB.prepare("DELETE FROM invites WHERE created_by = ?").bind(account.userId),
+    env.DB.prepare("DELETE FROM web_sessions WHERE user_id = ?").bind(account.userId),
     env.DB.prepare("DELETE FROM machines WHERE user_id = ?").bind(account.userId),
     env.DB.prepare("DELETE FROM users WHERE user_id = ?").bind(account.userId),
   ]);
   await userStub(env, account.userId).forget();
   return signOut();
+}
+
+/**
+ * The operator suspends an account for abuse (the terms allow it): lobbies it owns close for everyone,
+ * it leaves the rest, its devices and browser sign-ins end, and it can't sign in again. Nothing is erased.
+ */
+async function suspendAccount(req: Request, env: Env): Promise<Response> {
+  const given = req.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
+  if (!env.ADMIN_TOKEN || !(await sameSecret(given, env.ADMIN_TOKEN))) throw new ProtocolError("not_found");
+  const { login } = await parseBody(req, z.object({ login: z.string().min(1) }));
+  const user = await env.DB.prepare("SELECT user_id FROM users WHERE login = ? COLLATE NOCASE").bind(login).first<{ user_id: string }>();
+  if (!user) throw new ProtocolError("not_found", "no such user");
+
+  await env.DB.prepare("UPDATE users SET suspended_at = ? WHERE user_id = ?").bind(Date.now(), user.user_id).run();
+  for (const lobby of await lobbiesOf(env, user.user_id)) {
+    if (lobby.role === "owner") {
+      await closeLobby(env, lobby.lobby_id);
+    } else {
+      await env.DB.prepare("DELETE FROM lobby_members WHERE lobby_id = ? AND user_id = ?").bind(lobby.lobby_id, user.user_id).run();
+      await lobbyStub(env, lobby.lobby_id).removeUser(user.user_id);
+    }
+  }
+  const { results: sessions } = await env.DB.prepare("SELECT session_id FROM web_sessions WHERE user_id = ? AND revoked_at IS NULL")
+    .bind(user.user_id).all<{ session_id: string }>();
+  for (const s of sessions) await endWebSession(env, user.user_id, s.session_id);
+  const { results: devices } = await env.DB.prepare("SELECT machine_id FROM machines WHERE user_id = ? AND revoked_at IS NULL")
+    .bind(user.user_id).all<{ machine_id: string }>();
+  for (const d of devices) await revokeDevice(env, user.user_id, d.machine_id);
+  await env.DB.prepare("DELETE FROM invites WHERE created_by = ?").bind(user.user_id).run();
+  return Response.json({ suspended: login });
+}
+
+/** Compares secrets without leaking how much of them matched through timing. */
+async function sameSecret(a: string, b: string): Promise<boolean> {
+  const [x, y] = await Promise.all([sha256Hex(a), sha256Hex(b)]);
+  let diff = 0;
+  for (let i = 0; i < x.length; i++) diff |= x.charCodeAt(i) ^ y.charCodeAt(i);
+  return diff === 0;
 }
 
 /** Who said what to whom and when, without the content (LLD 15.6). */
@@ -513,19 +604,14 @@ async function seatSocket(req: Request, env: Env, params: Params): Promise<Respo
   const claims = token ? await verifyJwt(env, token) : undefined;
   if (!claims || claims.lobby !== params.lobbyId) throw new ProtocolError("unauthorized");
 
-  const headers = new Headers(req.headers);
-  headers.set("X-Agent-Id", claims.sub);
-  headers.delete("X-Machine-Id");
-  headers.delete("X-User-Id");
+  const headers = new Headers({ Upgrade: "websocket", "X-Agent-Id": claims.sub });
   const accountToken = tokenFromSubprotocol(req, "account");
-  let machine: Account | undefined;
-  if (accountToken) machine = await accountFromToken(env, accountToken);
+  const machine = accountToken ? await accountFromToken(env, accountToken) : undefined;
   if (machine?.machineId) {
     headers.set("X-Machine-Id", machine.machineId);
     headers.set("X-User-Id", machine.userId);
   }
-  headers.delete("Sec-WebSocket-Protocol");
-  return lobbyStub(env, claims.lobby).fetch(new Request(req.url, { headers }));
+  return lobbyStub(env, claims.lobby).fetch(new Request(`${INTERNAL}/agent`, { headers }));
 }
 
 /** The hosted dashboard watching a lobby live: roster and message metadata only. */
@@ -534,11 +620,9 @@ async function watchSocket(req: Request, env: Env, params: Params): Promise<Resp
   requireSameOrigin(req, env);
   const account = await requireAccount(req, env);
   const role = await membership(env, params.lobbyId, account.userId);
-  if (!role) throw new ProtocolError("forbidden");
-  const headers = new Headers(req.headers);
-  headers.set("X-Watch-User", account.userId);
-  headers.set("X-Watch-Owner", role === "owner" ? "1" : "0");
-  return lobbyStub(env, params.lobbyId!).fetch(new Request(req.url, { headers }));
+  if (!role || !account.sessionId) throw new ProtocolError("forbidden");
+  const headers = { Upgrade: "websocket", "X-Watch-User": account.userId, "X-Watch-Owner": role === "owner" ? "1" : "0", "X-Session-Id": account.sessionId };
+  return lobbyStub(env, params.lobbyId!).fetch(new Request(`${INTERNAL}/watch`, { headers }));
 }
 
 
@@ -551,15 +635,26 @@ async function requireAccount(req: Request, env: Env): Promise<Account> {
     throw new ProtocolError("login_required", "sign in with `agentlobbies login` first");
   }
 
-  const session = readCookie(req, SESSION_COOKIE);
-  const userId = session ? await verifyWebJwt(env, session) : undefined;
-  if (userId) {
+  const session = await webSession(req, env);
+  if (session) {
     // A cookie is sent by the browser on its own, so changes must come from this site's pages.
     if (req.method !== "GET") requireSameOrigin(req, env);
-    const user = await env.DB.prepare("SELECT login, avatar_url FROM users WHERE user_id = ?").bind(userId).first<{ login: string; avatar_url: string }>();
-    if (user) return { userId, login: user.login, avatarUrl: user.avatar_url };
+    return { userId: session.userId, sessionId: session.sessionId, login: session.login, avatarUrl: session.avatarUrl };
   }
   throw new ProtocolError("login_required", "sign in first");
+}
+
+/** The browser's sign-in from its session cookie, if it's valid and hasn't been ended. */
+async function webSession(req: Request, env: Env): Promise<{ userId: string; sessionId: string; login: string; avatarUrl: string } | undefined> {
+  const cookie = readCookie(req, SESSION_COOKIE);
+  const claims = cookie ? await verifyWebJwt(env, cookie) : undefined;
+  if (!claims) return undefined;
+  const user = await env.DB.prepare(
+    `SELECT u.login, u.avatar_url FROM web_sessions s JOIN users u ON u.user_id = s.user_id
+     WHERE s.session_id = ? AND s.user_id = ? AND s.revoked_at IS NULL AND u.suspended_at IS NULL`,
+  ).bind(claims.sessionId, claims.userId).first<{ login: string; avatar_url: string }>();
+  if (!user) return undefined;
+  return { ...claims, login: user.login, avatarUrl: user.avatar_url };
 }
 
 /** Routes only the agentlobbies app on a machine may call. */
@@ -575,7 +670,7 @@ async function accountFromToken(env: Env, token: string): Promise<Account | unde
   if (!claims) return undefined;
   const user = await env.DB.prepare(
     `SELECT u.login, u.avatar_url FROM machines m JOIN users u ON u.user_id = m.user_id
-     WHERE m.machine_id = ? AND m.user_id = ? AND m.revoked_at IS NULL`,
+     WHERE m.machine_id = ? AND m.user_id = ? AND m.revoked_at IS NULL AND u.suspended_at IS NULL`,
   ).bind(claims.machineId, claims.userId).first<{ login: string; avatar_url: string }>();
   if (!user) return undefined;
   return { ...claims, login: user.login, avatarUrl: user.avatar_url };
@@ -583,6 +678,30 @@ async function accountFromToken(env: Env, token: string): Promise<Account | unde
 
 function requireSameOrigin(req: Request, env: Env): void {
   if (req.headers.get("origin") !== new URL(env.PUBLIC_URL).origin) throw new ProtocolError("forbidden", "cross-site request");
+}
+
+/** New devices a day, and devices in total, so one account can't fill a lobby's key list. */
+async function limitDevices(env: Env, userId: string): Promise<void> {
+  await limitPerDay(env, "SELECT COUNT(*) AS n FROM machines WHERE user_id = ? AND created_at > ?", userId, ACCOUNT_LIMITS.devicesPerDay, "new devices");
+  const active = await env.DB.prepare("SELECT COUNT(*) AS n FROM machines WHERE user_id = ? AND revoked_at IS NULL").bind(userId).first<{ n: number }>();
+  if ((active?.n ?? 0) >= ACCOUNT_LIMITS.devices) {
+    throw new ProtocolError("rate_limited", `you have ${ACCOUNT_LIMITS.devices} devices signed in; revoke one from the Account page first`);
+  }
+}
+
+/** Throws unless `value` is an X25519 public key a lobby key can safely be sealed to (32 bytes, not a weak point). */
+async function requireBoxKey(value: string): Promise<void> {
+  try {
+    const raw = fromB64u(value);
+    if (raw.length !== 32) throw new Error("wrong length");
+    const peer = await crypto.subtle.importKey("raw", raw, { name: "X25519" }, false, []);
+    const probe = (await crypto.subtle.generateKey({ name: "X25519" }, false, ["deriveBits"])) as CryptoKeyPair;
+    // The Workers types spell the `public` member `$public`; the runtime wants `public`, as in the spec.
+    const algorithm = { name: "X25519", public: peer } as unknown as SubtleCryptoDeriveKeyAlgorithm;
+    await crypto.subtle.deriveBits(algorithm, probe.privateKey, 256); // fails for weak points
+  } catch {
+    throw new ProtocolError("bad_request", "that isn't a valid encryption key");
+  }
 }
 
 /** Throws rate_limited if `query` (bound to the user and a time 24 hours ago) counts `limit` or more. */
@@ -617,7 +736,7 @@ async function admitToLobby(
 ): Promise<Response> {
   const agentId = ulid();
   const owner = { userId: account.userId, login: account.login, avatarUrl: account.avatarUrl };
-  const result = await lobbyStub(env, lobbyId).admit({ ...profile, agentId, owner }, role);
+  const result = await lobbyStub(env, lobbyId).admit({ ...profile, agentId, owner, machineId: account.machineId }, role);
   if ("error" in result) throw new ProtocolError(result.error);
   const token = await issueJwt(env, { sub: agentId, lobby: lobbyId, role });
   return Response.json({ lobbyId, agentId, role, handle: result.handle, token, wsUrl: wsUrl(env, lobbyId), ...extra }, { status });
@@ -634,13 +753,39 @@ function userStub(env: Env, userId: string) {
 async function parseBody<T extends z.ZodTypeAny>(req: Request, schema: T): Promise<z.infer<T>> {
   let json: unknown;
   try {
-    json = await req.json();
-  } catch {
+    json = JSON.parse(await readBody(req));
+  } catch (e) {
+    if (e instanceof ProtocolError) throw e;
     json = undefined; // not JSON; the schema reports it
   }
   const parsed = schema.safeParse(json);
   if (!parsed.success) throw new ProtocolError("bad_request", parsed.error.issues[0]?.message ?? "invalid body");
   return parsed.data;
+}
+
+/** Reads the body, counting bytes as they arrive: Content-Length is optional, so it can't be trusted for the limit. */
+async function readBody(req: Request): Promise<string> {
+  if (!req.body) return "";
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > MAX_BODY_BYTES) {
+      await reader.cancel();
+      throw new ProtocolError("too_large");
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
 }
 
 async function sha256Hex(value: string): Promise<string> {

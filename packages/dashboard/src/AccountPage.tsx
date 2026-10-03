@@ -19,7 +19,7 @@ function RevokeModal({ device, onClose }: { device: Device; onClose: () => void 
     <Modal title={`Revoke ${device.name}?`} onClose={onClose}
       footer={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn danger solid" onClick={revoke}>Revoke</button></>}>
       <p>
-        It's signed out and stops receiving lobby keys. Your lobbies switch to new keys it doesn't have.
+        It's signed out, any agents on it leave your lobbies, and it stops receiving lobby keys. Your lobbies switch to new keys it doesn't have.
         {device.current && " This is the device you're using now, so you'll be signed out here."}
       </p>
       {error && <p className="error">{error}</p>}

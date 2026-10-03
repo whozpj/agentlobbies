@@ -43,6 +43,14 @@ export async function startDashboard(source: DashboardSource, staticDir: string 
   let port = 0;
 
   const server = createServer((req, res) => {
+    // A bad request must never take the daemon down with it.
+    handle(req, res).catch((e) => {
+      const status = e instanceof DaemonError ? 400 : 500;
+      send(res, status, { error: { code: e.code ?? "internal", message: e.message } });
+    });
+  });
+
+  async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const host = req.headers.host ?? "";
     if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) return send(res, 403, { error: "forbidden" });
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
@@ -50,11 +58,8 @@ export async function startDashboard(source: DashboardSource, staticDir: string 
     if (!tokenMatches(url.searchParams.get("token") ?? req.headers["x-dashboard-token"], token)) {
       return send(res, 401, { error: "unauthorized" });
     }
-    handleApi(source, req, res, url).catch((e) => {
-      const status = e instanceof DaemonError ? 400 : 500;
-      send(res, status, { error: { code: e.code ?? "internal", message: e.message } });
-    });
-  });
+    return handleApi(source, req, res, url);
+  }
 
   await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
   port = (server.address() as AddressInfo).port;
@@ -73,7 +78,13 @@ async function handleApi(source: DashboardSource, req: IncomingMessage, res: Ser
   const lobby = url.pathname.match(/^\/api\/lobbies\/([0-9a-f]{64})(?:\/|$)/)?.[1];
   const agentId = url.pathname.match(/\/agents\/([0-9A-HJKMNP-TV-Z]{26})$/)?.[1];
   const login = url.pathname.match(/\/members\/([\w-]+)$/)?.[1];
-  const body = async () => JSON.parse((await readBody(req)) || "{}") as Record<string, unknown>;
+  const body = async () => {
+    try {
+      return JSON.parse((await readBody(req)) || "{}") as Record<string, unknown>;
+    } catch {
+      throw new DaemonError("bad_request", "the request body isn't JSON");
+    }
+  };
   const reply = async (method: string, params: Record<string, unknown> = {}) => send(res, 200, await source.call(method, params));
 
   if (route === "GET /api/me") return reply("account.status");
@@ -117,14 +128,20 @@ function streamActivity(source: DashboardSource, req: IncomingMessage, res: Serv
 function serveStatic(res: ServerResponse, staticDir: string | undefined, pathname: string): void {
   const root = resolve(staticDir ?? ".");
   if (!staticDir || !existsSync(join(root, "index.html"))) return send(res, 404, { error: "dashboard not built" });
-  const requested = resolve(root, `.${decodeURIComponent(pathname)}`);
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return send(res, 400, { error: "bad path" });
+  }
+  const requested = resolve(root, `.${decoded}`);
   const inside = requested.startsWith(root + sep);
   const file = inside && existsSync(requested) && statSync(requested).isFile() ? requested : join(root, "index.html");
   const headers: Record<string, string> = { ...SECURITY_HEADERS, "content-type": CONTENT_TYPES[extname(file)] ?? "application/octet-stream" };
   // index.html names this version's asset files, so browsers must re-check it after an upgrade.
   if (file.endsWith("index.html")) headers["cache-control"] = "no-cache";
   res.writeHead(200, headers);
-  createReadStream(file).pipe(res);
+  createReadStream(file).on("error", () => res.destroy()).pipe(res);
 }
 
 function tokenMatches(given: string | string[] | undefined, expected: string): boolean {
@@ -132,16 +149,28 @@ function tokenMatches(given: string | string[] | undefined, expected: string): b
   return timingSafeEqual(Buffer.from(given), Buffer.from(expected));
 }
 
+const MAX_BODY_BYTES = 256 * 1024;
+
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolveBody, reject) => {
     let body = "";
-    req.on("data", (chunk) => (body += chunk));
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > MAX_BODY_BYTES) {
+        reject(new DaemonError("too_large", "request body is too large"));
+        req.destroy();
+      }
+    });
     req.on("end", () => resolveBody(body));
     req.on("error", reject);
   });
 }
 
 function send(res: ServerResponse, status: number, body: unknown): void {
+  if (res.headersSent) {
+    res.destroy();
+    return;
+  }
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
 }

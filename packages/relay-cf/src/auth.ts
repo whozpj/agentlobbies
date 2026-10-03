@@ -63,15 +63,20 @@ export async function verifyAccountJwt(env: Env, token: string): Promise<Account
   return { userId: payload.sub!, machineId: payload.machine };
 }
 
-/** A browser session (LLD 15.6). */
-export function issueWebJwt(env: Env, userId: string): Promise<string> {
-  return sign(env, userId, { kind: "web" }, "7d");
+/** A browser session (LLD 15.6). The session id names a web_sessions row, so it can be ended early. */
+export interface WebClaims {
+  userId: string;
+  sessionId: string;
 }
 
-export async function verifyWebJwt(env: Env, token: string): Promise<string | undefined> {
+export function issueWebJwt(env: Env, claims: WebClaims): Promise<string> {
+  return sign(env, claims.userId, { kind: "web", sid: claims.sessionId }, "7d");
+}
+
+export async function verifyWebJwt(env: Env, token: string): Promise<WebClaims | undefined> {
   const payload = await verify(env, token);
-  if (!payload || payload.kind !== "web") return undefined;
-  return payload.sub;
+  if (!payload || payload.kind !== "web" || typeof payload.sid !== "string") return undefined;
+  return { userId: payload.sub!, sessionId: payload.sid };
 }
 
 /** Browsers can't set headers on WebSockets, so tokens ride in the subprotocol list as `<prefix>.<token>`. */

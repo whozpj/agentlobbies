@@ -4,4 +4,5 @@ interface Env {
   JWT_PUBLIC_KEYS: string;
   IP_HASH_SALT: string;
   GITHUB_CLIENT_SECRET: string;
+  ADMIN_TOKEN?: string; // optional: enables suspending accounts for abuse
 }

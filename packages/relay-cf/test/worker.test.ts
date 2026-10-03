@@ -71,7 +71,7 @@ describe("token refresh", () => {
     const res = await refresh(host);
     expect(res.status).toBe(200);
     const { token } = await res.json<{ token: string }>();
-    const ws = await TestSocket.open({ lobbyId: host.lobbyId, token });
+    const ws = await TestSocket.open({ lobbyId: host.lobbyId, token, account: host.account });
     expect((await ws.hello()).agentId).toBe(host.agentId);
   });
 

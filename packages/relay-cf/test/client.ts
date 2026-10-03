@@ -57,10 +57,16 @@ export interface Account {
   boxPublicKey: string;
 }
 
-/** Signs in a machine. The relay never opens sealed keys, so any 32 bytes do as its box key. */
+/** A real X25519 public key, as a machine or browser registers for lobby keys to be sealed to. */
+export async function boxKey(): Promise<string> {
+  const pair = (await crypto.subtle.generateKey({ name: "X25519" }, true, ["deriveBits"])) as CryptoKeyPair;
+  return toB64u(new Uint8Array((await crypto.subtle.exportKey("raw", pair.publicKey)) as ArrayBuffer));
+}
+
+/** Signs in a machine. */
 export async function signIn(login: string): Promise<Account> {
   const { keys } = await newAgent("machine");
-  const boxPublicKey = toB64u(crypto.getRandomValues(new Uint8Array(32)));
+  const boxPublicKey = await boxKey();
   const res = await postJson("/v1/auth/github", {
     githubToken: `gho_fake_${login}`, machinePublicKey: toB64u(keys.publicKey), boxPublicKey, machineName: "test-mac",
   });
@@ -97,9 +103,10 @@ export interface Seat {
   token: string;
   keys: Awaited<ReturnType<typeof newAgent>>["keys"];
   profile: JoinProfile;
+  account: Account; // the machine that added the seat; it connects proving this machine
 }
 
-export type Lobby = Seat & { account: Account };
+export type Lobby = Seat;
 
 /** Creates a lobby as `owner` (a fresh user by default); the returned seat is the owner's person seat. */
 export async function createLobby(handle = "host", owner?: Account): Promise<Lobby> {
@@ -107,7 +114,7 @@ export async function createLobby(handle = "host", owner?: Account): Promise<Lob
   const res = await postJson("/v1/lobbies", { name: `${handle}-lobby` }, randomIp(), account.token);
   if (res.status !== 201) throw new Error(`create failed: ${res.status} ${await res.text()}`);
   const { lobbyId } = await res.json<{ lobbyId: string }>();
-  return { ...(await addPerson(lobbyId, handle, account)), account };
+  return addPerson(lobbyId, handle, account);
 }
 
 /** A member's machine adds their person seat, as a daemon does when it syncs memberships. */
@@ -116,7 +123,7 @@ export async function addPerson(lobbyId: string, handle: string, account: Accoun
   const res = await postJson(`/v1/lobbies/${lobbyId}/people`, { person: a.profile }, randomIp(), account.token);
   if (res.status !== 201) throw new Error(`add person failed: ${res.status} ${await res.text()}`);
   const body = await res.json<{ lobbyId: string; agentId: string; token: string }>();
-  return { ...body, keys: a.keys, profile: a.profile };
+  return { ...body, keys: a.keys, profile: a.profile, account };
 }
 
 /** `owner` places one of their agents into the lobby (they must be a member). */
@@ -125,7 +132,7 @@ export async function addAgent(lobbyId: string, handle: string, owner: Account):
   const res = await postJson(`/v1/lobbies/${lobbyId}/agents`, { agent: a.profile }, randomIp(), owner.token);
   if (res.status !== 201) throw new Error(`add failed: ${res.status} ${await res.text()}`);
   const body = await res.json<{ lobbyId: string; agentId: string; token: string }>();
-  return { ...body, keys: a.keys, profile: a.profile };
+  return { ...body, keys: a.keys, profile: a.profile, account: owner };
 }
 
 export async function createInvite(lobby: Lobby, options: Record<string, unknown> = {}): Promise<{ token: string; url: string }> {
@@ -165,8 +172,12 @@ export class TestSocket {
     });
   }
 
-  /** With `account`, the socket also proves which machine it's on, so it gets that machine's keys. */
-  static async open(seat: Pick<Seat, "lobbyId" | "token">, account?: Account): Promise<TestSocket> {
+  /**
+   * Proves the machine with the seat's own account unless another (or `null`, for none) is given: an
+   * agent may only connect from one of its owner's signed-in machines.
+   */
+  static async open(seat: Pick<Seat, "lobbyId" | "token"> & { account?: Account }, proof?: Account | null): Promise<TestSocket> {
+    const account = proof === undefined ? seat.account : (proof ?? undefined);
     const protocols = ["agentlobbies.v1", `bearer.${seat.token}`, ...(account ? [`account.${account.token}`] : [])];
     const res = await api(`/v1/lobbies/${seat.lobbyId}/ws`, {
       headers: { Upgrade: "websocket", "Sec-WebSocket-Protocol": protocols.join(", ") },

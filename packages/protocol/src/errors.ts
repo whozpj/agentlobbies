@@ -14,6 +14,7 @@ const STATUS = {
   duplicate: 409,
   lobby_full: 409,
   machine_offline: 409,
+  key_rotating: 409,
   lobby_closed: 410,
   client_too_old: 426,
   thread_too_deep: 422,

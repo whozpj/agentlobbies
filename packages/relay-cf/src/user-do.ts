@@ -19,7 +19,7 @@ const MachineMessage = z.discriminatedUnion("t", [
   z.object({ t: z.literal("result"), id: z.string(), result: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(), error: z.object({ code: z.string(), message: z.string() }).optional() }),
 ]);
 
-type Attachment = { kind: "machine"; machineId: string } | { kind: "web" };
+type Attachment = { kind: "machine"; machineId: string } | { kind: "web"; sessionId: string };
 
 /** A daemon's answer: `error` if it failed. */
 export interface CallResult {
@@ -48,11 +48,11 @@ export class UserDurableObject extends DurableObject<Env> {
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair(PING, PONG));
   }
 
-  /** The Worker has already authenticated the request; these headers say who is connecting. */
+  /** Only the Worker reaches this object; it builds these requests itself after checking who is connecting. */
   async fetch(req: Request): Promise<Response> {
     const { 0: client, 1: server } = new WebSocketPair();
     const machineId = req.headers.get("X-Machine-Id");
-    if (machineId) {
+    if (new URL(req.url).pathname === "/machine" && machineId) {
       for (const old of this.ctx.getWebSockets(machineId)) old.close(4009, "replaced");
       this.ctx.storage.sql.exec(
         `INSERT INTO machine_agents (machine_id, name, updated_at) VALUES (?, ?, ?)
@@ -62,8 +62,9 @@ export class UserDurableObject extends DurableObject<Env> {
       this.ctx.acceptWebSocket(server, [machineId]);
       server.serializeAttachment({ kind: "machine", machineId } satisfies Attachment);
     } else {
-      this.ctx.acceptWebSocket(server, ["web"]);
-      server.serializeAttachment({ kind: "web" } satisfies Attachment);
+      const sessionId = req.headers.get("X-Session-Id") ?? "";
+      this.ctx.acceptWebSocket(server, ["web", `session:${sessionId}`]);
+      server.serializeAttachment({ kind: "web", sessionId } satisfies Attachment);
       server.send(JSON.stringify({ t: "machines", machines: this.machines() }));
     }
     this.pushMachines();
@@ -144,10 +145,16 @@ export class UserDurableObject extends DurableObject<Env> {
     this.pushMachines();
   }
 
+  /** A browser signed out or was revoked: its open tabs disconnect. */
+  async closeSession(sessionId: string): Promise<void> {
+    for (const ws of this.ctx.getWebSockets(`session:${sessionId}`)) ws.close(4003, "signed out");
+  }
+
   /** The account was deleted: disconnect everyone and erase what this object kept. */
   async forget(): Promise<void> {
     for (const ws of this.ctx.getWebSockets()) ws.close(4003, "account deleted");
-    await this.ctx.storage.deleteAll();
+    // Emptied rather than dropped: the close handlers that follow still read the table.
+    this.ctx.storage.sql.exec("DELETE FROM machine_agents");
   }
 
   /** Tells every daemon and browser tab of this user that something changed, e.g. `{ t: "lobbies" }`. */

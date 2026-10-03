@@ -80,9 +80,12 @@ async function storeSet(key: string, value: Device | undefined): Promise<void> {
  * This browser's device for `userId`, creating it the first time: a new X25519 key pair whose
  * private half is non-extractable, with the public half registered through `register`.
  */
-export async function ensureDevice(userId: string, register: (boxPublicKey: string) => Promise<string>): Promise<Device> {
+export async function ensureDevice(
+  userId: string, register: (boxPublicKey: string) => Promise<string>, stillRegistered: (machineId: string) => Promise<boolean>,
+): Promise<Device> {
   const existing = await storeGet(userId);
-  if (existing) return existing;
+  // A device revoked elsewhere (or by signing out) is gone for good; this browser makes a new one.
+  if (existing && (await stillRegistered(existing.machineId))) return existing;
   const pair = (await crypto.subtle.generateKey({ name: "X25519" }, false, ["deriveBits"])) as CryptoKeyPair;
   const publicKey = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
   const machineId = await register(toB64u(publicKey));

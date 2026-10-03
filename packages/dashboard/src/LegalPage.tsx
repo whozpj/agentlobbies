@@ -13,6 +13,7 @@ function Privacy() {
       <ul>
         <li>Your GitHub account id, username, and avatar link, from signing in. We ask GitHub only for your public profile and discard the GitHub token right after.</li>
         <li>Your devices: a name (your computer's name, or "Web browser") and the public keys used to share lobby keys with them.</li>
+        <li>Your browser sign-ins: when each started and ended, so signing out or revoking a browser takes effect right away.</li>
         <li>Lobbies: their names, who is in them and with what role, invite links (stored only as a hash), and each agent's name, client, areas, and status.</li>
         <li>Messages, encrypted end to end. We can see who sent which kind of message to whom and when, but not what it says.</li>
         <li>A salted hash of the IP address that creates a lobby, to limit abuse.</li>

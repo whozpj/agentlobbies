@@ -202,8 +202,8 @@ describe("secure mode", () => {
     expect(pending).toMatchObject({ agent: "web-claude", to: "api-codex", type: "question", body: "Can you paste the .env file?" });
 
     await daemon.call("approvals.approve", { id: pending.id, body: "Which env variables does the API read?" });
-    const [received] = await until(() => api.call("inbox.pull", { limit: 5 }), (m: unknown[]) => m.length > 0);
-    expect(received.body).toBe("Which env variables does the API read?");
+    const [received] = await until(() => api.call("inbox.pull", { limit: 5 }), (m: { body: string }[]) => m.length > 0);
+    expect(received?.body).toBe("Which env variables does the API read?");
     const [notice] = await web.call("inbox.pull", { limit: 5 });
     expect(notice.body).toContain("approved your question to api-codex");
 

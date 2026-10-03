@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, isHosted, lobbyName, peopleIn, type Agent, type Lobby, type Me, type Message, type MyAgent } from "./api";
+import { api, isHosted, lobbyName, type Agent, type Lobby, type Me, type Message, type MyAgent } from "./api";
 import { MessageFeed } from "./MessageFeed";
 import { Topology } from "./Topology";
 import { Avatar, CopyLink, InstallSteps, LockIcon, Modal, StatusDot } from "./ui";
@@ -105,7 +105,6 @@ function AddAgentModal({ lobby, agents, onClose }: { lobby: Lobby; agents: MyAge
 function PeopleModal({ lobby, me, onClose }: { lobby: Lobby; me: Me | null; onClose: () => void }) {
   const [error, setError] = useState("");
   const isOwner = lobby.myRole === "host";
-  const people = peopleIn(lobby);
   const remove = async (login: string) => {
     try {
       await api.removeMember(lobby.lobbyId, login);
@@ -118,12 +117,12 @@ function PeopleModal({ lobby, me, onClose }: { lobby: Lobby; me: Me | null; onCl
   return (
     <Modal title="People" onClose={onClose} footer={<button className="btn" onClick={onClose}>Done</button>}>
       <ul className="people-list">
-        {people.map((p) => {
-          const login = p.owner!.login;
+        {lobby.people.map((p) => {
+          const login = p.login;
           const self = login === me?.login;
           return (
             <li key={login}>
-              <Avatar url={p.owner!.avatarUrl} size={28} />
+              <Avatar url={p.avatarUrl} size={28} />
               <span>@{login}{self && <span className="muted"> (you)</span>}</span>
               <span className="tag">{ROLE_LABEL[p.role]}</span>
               {isOwner && !self && <button className="btn small" onClick={() => remove(login)}>Remove</button>}
@@ -258,7 +257,7 @@ export function LobbyPage({ lobby, me, agents: myAgents, onChange }: { lobby: Lo
   const [selected, setSelected] = useState<string | null>(null);
   const isOwner = lobby.myRole === "host";
   const canAdd = lobby.myRole === "host" || lobby.myRole === "member";
-  const people = peopleIn(lobby);
+  const people = lobby.people;
   const agents = lobby.roster.filter((a) => a.client !== "cli");
   const close = () => { setDialog(null); onChange(); };
 
@@ -308,7 +307,7 @@ export function LobbyPage({ lobby, me, agents: myAgents, onChange }: { lobby: Lo
           <div className="actions">
             <button className="people" aria-label={`People (${people.length})`} onClick={() => setDialog("people")}>
               {people.map((p) => (
-                <span key={p.agentId} title={`@${p.owner!.login} · ${ROLE_LABEL[p.role]}`}><Avatar url={p.owner!.avatarUrl} size={26} /></span>
+                <span key={p.login} title={`@${p.login} · ${ROLE_LABEL[p.role]}`}><Avatar url={p.avatarUrl} size={26} /></span>
               ))}
             </button>
             {isOwner && <button className="btn" onClick={() => setDialog("invite")}>Invite people</button>}

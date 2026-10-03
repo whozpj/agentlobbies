@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 export function Logo() {
   return (
@@ -20,10 +20,40 @@ export function Avatar({ url, size = 20 }: { url: string; size?: number }) {
   return <img className="avatar" src={url} alt="" width={size} height={size} />;
 }
 
+const FOCUSABLE = "a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])";
+
+/**
+ * A dialog that keeps keyboard focus inside it while open (the WAI-ARIA dialog pattern): focus moves
+ * in on open, Tab and Shift+Tab wrap around, Escape closes, and focus goes back where it was.
+ */
 export function Modal({ title, onClose, footer, children }: { title: string; onClose: () => void; footer: ReactNode; children: ReactNode }) {
+  const dialog = useRef<HTMLDivElement>(null);
+  // Read while rendering, before an autoFocus field inside takes focus.
+  const [opener] = useState(() => document.activeElement as HTMLElement | null);
+
+  useEffect(() => {
+    if (!dialog.current?.contains(document.activeElement)) {
+      (dialog.current?.querySelector<HTMLElement>(FOCUSABLE) ?? dialog.current)?.focus();
+    }
+    return () => opener?.focus();
+  }, []);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
+      if (e.key !== "Tab" || !dialog.current) return;
+      const focusable = [...dialog.current.querySelectorAll<HTMLElement>(FOCUSABLE)];
+      if (focusable.length === 0) return;
+      const first = focusable[0]!;
+      const last = focusable[focusable.length - 1]!;
+      const inside = dialog.current.contains(document.activeElement);
+      if (e.shiftKey && (document.activeElement === first || !inside)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (document.activeElement === last || !inside)) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
@@ -31,7 +61,7 @@ export function Modal({ title, onClose, footer, children }: { title: string; onC
 
   return (
     <div className="overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modal" role="dialog" aria-modal="true" aria-label={title}>
+      <div className="modal" role="dialog" aria-modal="true" aria-label={title} ref={dialog} tabIndex={-1}>
         <h2>{title}</h2>
         <div className="modal-body">{children}</div>
         <footer className="modal-foot">{footer}</footer>

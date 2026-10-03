@@ -66,6 +66,9 @@ const MIGRATIONS = [
   `
   CREATE TABLE lobby_keys (epoch INTEGER NOT NULL, machine_id TEXT NOT NULL, sealed TEXT NOT NULL, PRIMARY KEY (epoch, machine_id));
   `,
+  `
+  ALTER TABLE agents ADD COLUMN machine_id TEXT;
+  `,
 ];
 
 /** True once init() has created this lobby. Stray requests must not create tables (G17). */

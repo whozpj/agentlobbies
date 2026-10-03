@@ -193,6 +193,44 @@ describe("people, from the browser", () => {
     await pwExpect(helperPage.getByText("No lobbies yet")).toBeVisible();
   });
 
+  it("lists someone who joined only in the browser, lets the owner remove them, and keeps keyboard focus in the dialog", async () => {
+    const owner = new Machine();
+    await owner.login("webowner");
+    await owner.createLobby("web-team");
+    const link = (await owner.cli(owner.home, "invite")).match(/https?:\/\/\S+\/invite\/[\w-]+/)![0];
+
+    const guestLogin = `webonly${Date.now() % 1_000_000}`; // no machine, only a browser
+    const guestPage = await newBrowserPage();
+    await guestPage.goto(link);
+    await signIn(guestPage, guestLogin);
+    await guestPage.getByRole("button", { name: new RegExp(`Join as @${guestLogin}`) }).click();
+    await pwExpect(guestPage.getByRole("heading", { name: "web-team" })).toBeVisible();
+
+    const ownerPage = await signedIn(owner);
+    await ownerPage.getByRole("link", { name: "web-team" }).click();
+    const peopleButton = ownerPage.getByRole("button", { name: /People/ });
+    await peopleButton.click();
+    const dialog = ownerPage.getByRole("dialog");
+    const guestRow = dialog.getByRole("listitem").filter({ hasText: `@${guestLogin}` });
+    await pwExpect(guestRow).toBeVisible();
+
+    // Tab and Shift+Tab stay inside the open dialog; Escape closes it and focus returns to the button.
+    for (let i = 0; i < 6; i++) {
+      await ownerPage.keyboard.press("Tab");
+      expect(await dialog.evaluate((d) => d.contains(document.activeElement))).toBe(true);
+    }
+    await ownerPage.keyboard.press("Shift+Tab");
+    expect(await dialog.evaluate((d) => d.contains(document.activeElement))).toBe(true);
+    await ownerPage.keyboard.press("Escape");
+    await pwExpect(dialog).toHaveCount(0);
+    await pwExpect(peopleButton).toBeFocused();
+
+    await peopleButton.click();
+    await guestRow.getByRole("button", { name: "Remove" }).click();
+    await guestPage.reload();
+    await pwExpect(guestPage.getByText("No lobbies yet")).toBeVisible();
+  });
+
   it("lets a member leave from the browser", async () => {
     const owner = new Machine();
     await owner.login("host2");

@@ -71,25 +71,21 @@ describe("lobby keys (LLD 15.4)", () => {
     expect((await keys(bobWs, (f) => f.mine.length > 0)).mine).toEqual([{ epoch: 1, sealed: expect.any(String) }]);
   });
 
-  it("refuses keys from a socket that hasn't proven its machine, or for a machine outside the lobby", async () => {
+  it("refuses an agent's socket unless it proves the agent's own machine, and keys for a machine outside the lobby", async () => {
     const owner = await signIn("strict-owner");
     const lobby = await createLobby("strict-owner", owner);
-    const anonymous = await TestSocket.open(lobby);
-    await anonymous.hello();
-    expect(await put(anonymous, 1, true, [owner.machineId])).toMatchObject({ t: "err", code: "forbidden" });
+    expect(await (await TestSocket.open(lobby, null)).closed()).toBe(4001);
 
     const outsider = await signIn("outsider");
     const ws = await connect(lobby, owner);
     expect(await put(ws, 1, true, [owner.machineId, outsider.machineId])).toMatchObject({ t: "err", code: "forbidden" });
   });
 
-  it("ignores a machine claim from another user's account token", async () => {
+  it("refuses an agent's socket that proves another user's machine", async () => {
     const owner = await signIn("claim-owner");
     const lobby = await createLobby("claim-owner", owner);
     const mallory = await signIn("claim-mallory");
-    const ws = await TestSocket.open(lobby, mallory);
-    await ws.hello();
-    expect(await put(ws, 1, true, [owner.machineId])).toMatchObject({ t: "err", code: "forbidden" });
+    expect(await (await TestSocket.open(lobby, mallory)).closed()).toBe(4001);
   });
 
   it("refuses to fill an epoch the sending machine doesn't hold", async () => {
