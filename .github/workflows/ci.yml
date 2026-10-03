@@ -27,4 +27,8 @@ jobs:
           node-version: ${{ matrix.node }}
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @agentlobbies/e2e exec playwright install --with-deps chromium
-      - run: pnpm turbo run build typecheck test
+      - run: pnpm turbo run build typecheck test 2>&1 | tee test-output.txt; exit ${PIPESTATUS[0]}
+        shell: bash
+      - name: Show test failures as annotations
+        if: failure()
+        run: grep -E "Error|error|FAIL|×|failed|Unhandled" test-output.txt | grep -v "^.*Tests .*passed" | head -40 | sed 's/^/::error::/'
