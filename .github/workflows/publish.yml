@@ -18,12 +18,12 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4 # the version in package.json's packageManager
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-      - run: corepack enable pnpm
       - run: pnpm install --frozen-lockfile
       - name: Check the tag matches the package version
         run: test "v$(node -p "require('./packages/cli/package.json').version")" = "$GITHUB_REF_NAME"

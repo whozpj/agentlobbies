@@ -91,11 +91,16 @@ export async function openSession(opts: { client: string; cwd: string; home?: st
   let closed = false;
   let reconnecting: Promise<void> | undefined;
 
+  /** Swaps in a new connection and session together, so no call ever pairs one with the other's. */
   async function connect() {
-    daemon = await connectToDaemon(opts.home);
-    ({ sessionId } = await daemon.call("session.open", { client: opts.client, cwd: opts.cwd, passive: opts.passive ?? false }));
-    daemon.onClose(() => {
-      if (!closed) void reconnect();
+    const client = await connectToDaemon(opts.home);
+    const opened = await client.call("session.open", { client: opts.client, cwd: opts.cwd, passive: opts.passive ?? false });
+    const previous = daemon;
+    daemon = client;
+    sessionId = opened.sessionId;
+    previous?.close();
+    client.onClose(() => {
+      if (!closed && daemon === client) void reconnect();
     });
   }
 
@@ -123,10 +128,13 @@ export async function openSession(opts: { client: string; cwd: string; home?: st
 
   return {
     async call(method, params = {}) {
+      if (reconnecting) await reconnecting;
       try {
         return await daemon.call(method, { sessionId, ...params });
       } catch (e) {
-        if (!(e instanceof DaemonError && e.code === "daemon_unavailable")) throw e;
+        // The daemon restarted (an upgrade): reconnect and open a new session, then try once more.
+        const lost = e instanceof DaemonError && (e.code === "daemon_unavailable" || e.code === "no_session");
+        if (!lost) throw e;
         await reconnect();
         return daemon.call(method, { sessionId, ...params });
       }
