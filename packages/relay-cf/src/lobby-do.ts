@@ -245,6 +245,7 @@ export class LobbyDurableObject extends DurableObject<Env> {
   async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
     const att = ws.deserializeAttachment() as SocketAttachment | null;
     if (!att || att.watcher) return; // refused sockets have no attachment; watchers only listen
+    if (!lobbyExists(this.ctx.storage.sql)) return ws.close(4010, "lobby deleted"); // a frame that crossed the deletion
     if (typeof raw !== "string" || new TextEncoder().encode(raw).length > LIMITS.maxFrameBytes) {
       return ws.close(4000, "bad frame");
     }

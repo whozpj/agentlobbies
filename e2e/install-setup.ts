@@ -13,9 +13,11 @@ declare module "vitest" {
 /** Packs the CLI and installs the tarball with plain npm, the way a user gets it. */
 export default function setup(project: TestProject) {
   const packDir = mkdtempSync(join(tmpdir(), "al-pack-"));
-  execFileSync("corepack", ["pnpm@10", "pack", "--pack-destination", packDir], {
+  // The tests run through pnpm, which names itself in npm_execpath (corepack can't fetch pnpm on every Node).
+  const pnpm = process.env.npm_execpath ?? "pnpm";
+  const [command, args] = /\.[cm]?js$/.test(pnpm) ? [process.execPath, [pnpm]] : [pnpm, []];
+  execFileSync(command, [...args, "pack", "--pack-destination", packDir], {
     cwd: resolve(import.meta.dirname, "../packages/cli"),
-    env: { ...process.env, COREPACK_ENABLE_DOWNLOAD_PROMPT: "0" },
     stdio: "ignore",
   });
   const tarball = join(packDir, readdirSync(packDir).find((f) => f.endsWith(".tgz"))!);
