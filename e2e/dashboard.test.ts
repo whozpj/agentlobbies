@@ -65,7 +65,7 @@ describe("dashboard in a real browser", () => {
 
     await page.getByRole("button", { name: "Remove web-claude" }).click();
     await pwExpect(page.getByTestId("owner-web-claude")).toHaveCount(0);
-    expect(await web.tool("lobby_status")).toContain("not in a lobby");
+    expect(await web.until("lobby_status", "not in a lobby")).toContain("not in a lobby");
 
     await web.mcp.close();
     await page.close();

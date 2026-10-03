@@ -1,0 +1,30 @@
+# Builds, typechecks, and runs every test (including the end-to-end and browser tests) on each push
+# and pull request. The publish workflow runs it too, so a release can't skip it.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: ["22.13.0", "24"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: corepack enable pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @agentlobbies/e2e exec playwright install --with-deps chromium
+      - run: pnpm turbo run build typecheck test

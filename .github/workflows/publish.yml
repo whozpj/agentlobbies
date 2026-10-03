@@ -1,5 +1,5 @@
-# Publishes the CLI to npm when a version tag (v1.2.3) is pushed, with provenance: npm shows which
-# commit and workflow built each release. Uses npm trusted publishing, so no npm token is stored here.
+# Publishes the CLI to npm when a version tag (v1.2.3) is pushed and every test passes, with provenance:
+# npm shows which commit and workflow built each release. Uses npm trusted publishing, so no npm token is stored here.
 name: Publish to npm
 
 on:
@@ -11,7 +11,11 @@ permissions:
   id-token: write # lets npm verify this workflow (trusted publishing and provenance)
 
 jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
   publish:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
