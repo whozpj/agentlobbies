@@ -312,8 +312,9 @@ describe("the browser as a device (LLD 15.11)", () => {
     const asked = await ownerSocket.next("keys", (f) => f.missing.some((m) => m.machineId === machineId));
     expect(asked.machines.map((m) => m.machineId)).toContain(machineId);
 
-    ownerSocket.send({ t: "keys.put", reqId: ulid(), epoch: 1, create: false, sealed: [{ machineId, sealed: "Zm9yLWJyb3dzZXI" }] });
-    await ownerSocket.next("ok");
+    const fill = ulid();
+    ownerSocket.send({ t: "keys.put", reqId: fill, epoch: 1, create: false, sealed: [{ machineId, sealed: "Zm9yLWJyb3dzZXI" }] });
+    expect((await ownerSocket.reply(fill)).t).toBe("ok");
     const keys = await web(`/v1/lobbies/${lobby.lobbyId}/keys?device=${machineId}`, cookie);
     expect(await keys.json()).toEqual([{ epoch: 1, sealed: "Zm9yLWJyb3dzZXI" }]);
     expect((await web(`/v1/lobbies/${lobby.lobbyId}/keys?device=${owner.machineId}`, await webSignIn("device-stranger"))).status).toBe(403);
