@@ -1056,8 +1056,10 @@ export class Daemon extends EventEmitter {
         if (one) sealed.push(one);
       }
       const [first = [], ...rest] = batches(sealed);
-      conn.send({ t: "keys.put", reqId: ulid(), epoch, create: true, sealed: first });
-      for (const batch of rest) conn.send({ t: "keys.put", reqId: ulid(), epoch, create: false, sealed: batch });
+      const reqId = ulid();
+      const created = this.waitForReply(reqId);
+      conn.send({ t: "keys.put", reqId, epoch, create: true, sealed: first });
+      if (rest.length > 0) void this.sendRestOnceCreated(conn, created, epoch, rest);
       return;
     }
 
@@ -1077,6 +1079,16 @@ export class Daemon extends EventEmitter {
     for (const [epoch, sealed] of byEpoch) {
       for (const batch of batches(sealed)) conn.send({ t: "keys.put", reqId: ulid(), epoch, create: false, sealed: batch });
     }
+  }
+
+  /**
+   * Sends the rest of a new key's copies only once the relay took the key. Another machine may have made
+   * this epoch first; then this key is never used (it isn't kept here) and its copies must not go out.
+   * Waits off the frame queue, which is what delivers the relay's answer.
+   */
+  private async sendRestOnceCreated(conn: Connection, created: Promise<OkOrErr | undefined>, epoch: number, rest: { machineId: string; sealed: string }[][]) {
+    if ((await created)?.t !== "ok") return;
+    for (const batch of rest) conn.send({ t: "keys.put", reqId: ulid(), epoch, create: false, sealed: batch });
   }
 
   /** Decrypts an envelope with this machine's key for its epoch: "locked" if the key hasn't arrived, "broken" if it fails. */

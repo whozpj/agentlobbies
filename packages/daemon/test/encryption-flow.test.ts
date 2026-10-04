@@ -107,22 +107,36 @@ describe("end-to-end encryption between machines", () => {
     expect(messages.find((x: { body: string }) => x.body === "written offline")).toMatchObject({ from: "alice" });
   }, 60_000);
 
-  it("hands out a lobby key in batches small enough for the relay, the first one making the key", async () => {
+  it("hands out a new key in batches small enough for the relay, the rest only once the relay took the key", async () => {
     const alice = await startDaemon(freshUser("alice"));
     await alice.daemon.call("lobby.create", { name: "crowded" });
     const internals = alice.daemon as unknown as {
       db: { activeSeats(): { lobby_id: string }[]; account(): { machine_id: string } };
       onKeys(seat: unknown, conn: unknown, frame: unknown): Promise<void>;
+      onReply(seat: unknown, frame: unknown): void;
     };
     const seat = internals.db.activeSeats()[0]!;
     const own = { machineId: internals.db.account().machine_id, boxPublicKey: toB64u((await generateBoxKeys()).publicKey) };
     const others = await Promise.all(Array.from({ length: 299 }, async (_, i) => ({
       machineId: `01J${String(i).padStart(23, "0")}`, boxPublicKey: toB64u((await generateBoxKeys()).publicKey),
     })));
-    const sent: { create: boolean; sealed: { machineId: string }[] }[] = [];
-    await internals.onKeys(seat, { send: (f: never) => sent.push(f) }, { t: "keys", current: 0, rotate: false, mine: [], machines: [...others, own], missing: [] });
+    const frame = { t: "keys", current: 0, rotate: false, mine: [], machines: [...others, own], missing: [] };
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
 
-    expect(sent.map((f) => [f.create, f.sealed.length])).toEqual([[true, 256], [false, 44]]);
+    // The relay takes the key: the remaining copies follow.
+    const sent: { reqId: string; create: boolean; sealed: { machineId: string }[] }[] = [];
+    await internals.onKeys(seat, { send: (f: never) => sent.push(f) }, frame);
+    expect(sent.map((f) => [f.create, f.sealed.length])).toEqual([[true, 256]]);
     expect(sent[0]!.sealed[0]!.machineId).toBe(own.machineId);
+    internals.onReply(seat, { t: "ok", reqId: sent[0]!.reqId });
+    await settle();
+    expect(sent.map((f) => [f.create, f.sealed.length])).toEqual([[true, 256], [false, 44]]);
+
+    // Another machine made the epoch first: this key's other copies never go out.
+    const lost: typeof sent = [];
+    await internals.onKeys(seat, { send: (f: never) => lost.push(f) }, frame);
+    internals.onReply(seat, { t: "err", reqId: lost[0]!.reqId, code: "version_conflict", message: "version_conflict" });
+    await settle();
+    expect(lost).toHaveLength(1);
   });
 });
