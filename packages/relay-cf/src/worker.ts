@@ -91,6 +91,13 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     try {
+      const url = new URL(req.url);
+      const isApi = url.pathname.startsWith("/v1/");
+      // The old workers.dev address keeps its API for older installs; people go to the site itself.
+      if (!isApi && url.hostname.endsWith(".workers.dev") && url.host !== new URL(env.PUBLIC_URL).host) {
+        return Response.redirect(`${env.PUBLIC_URL}${url.pathname}${url.search}`, 301);
+      }
+      if (!isApi && !url.pathname.startsWith("/auth/")) return await env.ASSETS.fetch(req);
       if (Number(req.headers.get("content-length") ?? 0) > MAX_BODY_BYTES) throw new ProtocolError("too_large");
       for (const [method, pattern, handler] of routes) {
         const match = pattern.exec(req.url);

@@ -3,19 +3,26 @@ main = "src/worker.ts"
 compatibility_date = "2026-08-01"
 compatibility_flags = ["nodejs_compat"]
 
+# agentlobbies.com is the site and API. The old workers.dev address stays on for installs from before
+# the domain: its API keeps working, and people opening it in a browser are sent to agentlobbies.com.
+routes = [{ pattern = "agentlobbies.com", custom_domain = true }]
+workers_dev = true
+
 [vars]
 MIN_CLIENT_VERSION = "0.4.0"
-PUBLIC_URL = "https://agentlobbies.agentlobbies-relay-cf.workers.dev"
+PUBLIC_URL = "https://agentlobbies.com"
 JWT_KID = "k1"
 GITHUB_API_URL = "https://api.github.com"
 GITHUB_URL = "https://github.com"
 GITHUB_CLIENT_ID = "Ov23liFoL6Ih3Aj5vPwc"
 
-# The hosted dashboard. Only the API and sign-in reach the Worker; everything else is the app.
+# The hosted dashboard. Its scripts and styles are served directly; pages go through the Worker, which
+# sends visitors of the old address to agentlobbies.com and serves everything else from here.
 [assets]
 directory = "../dashboard/dist"
+binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/v1/*", "/auth/*"]
+run_worker_first = ["/*", "!/assets/*"]
 
 [[durable_objects.bindings]]
 name = "LOBBY"

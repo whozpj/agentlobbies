@@ -1,6 +1,6 @@
 import { refreshSigningBytes, signEnvelope, toB64u, webCrypto } from "@agentlobbies/protocol";
 import { runInDurableObject } from "cloudflare:test";
-import { env } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
 import { ulid } from "ulid";
 import { beforeAll, describe, expect, it } from "vitest";
 import { TestSocket, addAgent, api, createLobby, fakeGitHub, postJson, randomIp, signIn, type Seat } from "./client";
@@ -202,5 +202,15 @@ describe("WebSocket", () => {
     const ws = await TestSocket.open(host);
     ws.send({ t: "ack", seq: 1 });
     expect(await ws.closed()).toBe(4000);
+  });
+});
+
+describe("the old workers.dev address", () => {
+  it("keeps the API working for older installs and sends browsers to the site", async () => {
+    const old = "https://agentlobbies.someone.workers.dev";
+    expect((await exports.default.fetch(new Request(`${old}/v1/health`))).status).toBe(200);
+    const page = await exports.default.fetch(new Request(`${old}/invite/abc?x=1`, { redirect: "manual" }));
+    expect(page.status).toBe(301);
+    expect(page.headers.get("location")).toBe(`${env.PUBLIC_URL}/invite/abc?x=1`);
   });
 });
