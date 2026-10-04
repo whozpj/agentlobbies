@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { AccountPage } from "./AccountPage";
 import { ApprovalsPage } from "./ApprovalsPage";
 import { AgentsPage } from "./AgentsPage";
+import { GetStartedPage } from "./GetStarted";
 import { LegalPage } from "./LegalPage";
 import { api, isHosted, lobbyName, type Lobby, type Me, type MyAgent } from "./api";
 import { LobbiesPage } from "./LobbiesPage";
@@ -98,6 +99,7 @@ export function App() {
             </a>
           )}
           <a href="#/account" className={route === "/account" ? "active" : ""}>Account</a>
+          <a href="#/get-started" className={route === "/get-started" ? "active" : ""}>Get started</a>
         </nav>
         <div className="topbar-right">
           <button className="icon-btn" aria-label={theme === "dark" ? "Light mode" : "Dark mode"} onClick={toggleTheme}>
@@ -115,7 +117,8 @@ export function App() {
           : route === "/agents" ? <AgentsPage agents={agents} />
           : route === "/account" ? <AccountPage me={me ?? null} />
           : route === "/approvals" ? <ApprovalsPage onChange={refresh} />
-          : <LobbiesPage lobbies={lobbies} onChange={refresh} />}
+          : route === "/get-started" ? <GetStartedPage />
+          : <LobbiesPage lobbies={lobbies} me={me ?? null} onChange={refresh} />}
       </main>
     </div>
   );

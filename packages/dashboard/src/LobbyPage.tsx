@@ -137,13 +137,18 @@ function PeopleModal({ lobby, me, onClose }: { lobby: Lobby; me: Me | null; onCl
   );
 }
 
-/** Deleting is for everyone and can't be undone; an old lobby without an owner can only be dropped from this machine. */
-function DeleteLobbyModal({ lobby, onClose }: { lobby: Lobby; onClose: () => void }) {
+/**
+ * The owner deletes a lobby for everyone; anyone else leaves it. An old lobby without an owner can only
+ * be dropped from this machine. Every one of these asks first.
+ */
+export function DeleteLobbyModal({ lobby, me, onClose }: { lobby: Lobby; me: Me | null; onClose: () => void }) {
   const [error, setError] = useState("");
-  const isOwner = lobby.myRole === "host";
+  const name = lobbyName(lobby);
+  const action = lobby.myRole === "host" ? "delete" : lobby.myRole && me ? "leave" : "forget";
   const confirm = async () => {
     try {
-      if (isOwner) await api.deleteLobby(lobby.lobbyId);
+      if (action === "delete") await api.deleteLobby(lobby.lobbyId);
+      else if (action === "leave") await api.removeMember(lobby.lobbyId, me!.login);
       else await api.forgetLobby(lobby.lobbyId);
       location.hash = "#/";
       onClose();
@@ -151,13 +156,15 @@ function DeleteLobbyModal({ lobby, onClose }: { lobby: Lobby; onClose: () => voi
       setError((e as Error).message);
     }
   };
+  const text = {
+    delete: { title: `Delete ${name}?`, button: "Delete lobby", body: "This removes the lobby for everyone in it and erases its messages and keys. It can't be undone." },
+    leave: { title: `Leave ${name}?`, button: "Leave lobby", body: "Your agents leave with you, and the lobby switches to a new key. You'd need a new invite to come back." },
+    forget: { title: `Remove ${name} from this machine?`, button: "Remove", body: "This lobby is from before lobbies had owners, so no one can delete it. Removing it clears it from this machine." },
+  }[action];
   return (
-    <Modal title={isOwner ? `Delete ${lobbyName(lobby)}?` : `Remove ${lobbyName(lobby)} from this machine?`} onClose={onClose}
-      footer={<><button className="btn" onClick={onClose}>Cancel</button>
-        <button className="btn danger solid" onClick={confirm}>{isOwner ? "Delete lobby" : "Remove"}</button></>}>
-      {isOwner
-        ? <p>This removes the lobby for everyone in it and erases its messages and keys. It can't be undone.</p>
-        : <p>This lobby is from before lobbies had owners, so no one can delete it. Removing it clears it from this machine.</p>}
+    <Modal title={text.title} onClose={onClose}
+      footer={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn danger solid" onClick={confirm}>{text.button}</button></>}>
+      <p>{text.body}</p>
       {error && <p className="error">{error}</p>}
     </Modal>
   );
@@ -347,7 +354,7 @@ export function LobbyPage({ lobby, me, agents: myAgents, onChange }: { lobby: Lo
       {dialog === "invite" && <InviteModal lobby={lobby} onClose={close} />}
       {dialog === "add" && <AddAgentModal lobby={lobby} agents={myAgents} onClose={close} />}
       {dialog === "people" && <PeopleModal lobby={lobby} me={me} onClose={close} />}
-      {dialog === "delete" && <DeleteLobbyModal lobby={lobby} onClose={close} />}
+      {dialog === "delete" && <DeleteLobbyModal lobby={lobby} me={me} onClose={close} />}
       {editing && <EditAgentModal lobby={lobby} agent={editing} myAgents={myAgents} onClose={() => { setEditing(null); onChange(); }} />}
     </div>
   );

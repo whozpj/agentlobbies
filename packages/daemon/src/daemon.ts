@@ -1124,6 +1124,7 @@ export class Daemon extends EventEmitter {
       folder: basename(a.cwd),
       cwd: a.cwd,
       online: this.isRunning(a.seat_key),
+      lastUsedAt: a.last_seen_at, // when its session last started
       secure: a.secure === 1,
       pendingApprovals: this.pendingCount(a.seat_key, pendingBySeat),
       lobbies: this.db.seatsFor(a.seat_key).map((s) => ({ lobbyId: s.lobby_id, name: s.lobby_name, handle: s.handle, agentId: s.agent_id })),

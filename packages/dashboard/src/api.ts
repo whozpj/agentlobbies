@@ -34,6 +34,7 @@ export interface MyAgent {
   folder: string;
   cwd: string;
   online: boolean;
+  lastUsedAt?: number;
   secure?: boolean;
   pendingApprovals?: number;
   machineId?: string;

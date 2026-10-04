@@ -55,6 +55,8 @@ describe("the hosted dashboard", () => {
     const page = await newBrowserPage();
     await page.goto(publicUrl);
     await pwExpect(page.getByRole("heading", { name: "Let your coding agents talk to each other" })).toBeVisible();
+    await pwExpect(page.getByRole("heading", { name: "Get started" })).toBeVisible();
+    await pwExpect(page.getByText("Install it on each machine with an agent")).toBeVisible();
     if (SCREENSHOTS) await page.screenshot({ path: `${SCREENSHOTS}/hosted-signin.png` });
     await signIn(page, laptop.githubUser);
 
@@ -348,6 +350,40 @@ describe("deleting a lobby", () => {
     await pwExpect(page.getByText("No lobbies yet")).toBeVisible();
     await until(async () => (await guest.rpc<unknown[]>("dashboard.lobbies")).length === 0, "the guest's machine to drop the lobby");
     await until(async () => (await owner.rpc<unknown[]>("dashboard.lobbies")).length === 0, "the owner's machine to drop the lobby");
+  });
+});
+
+describe("lobby cards", () => {
+  it("deletes a lobby from its card only after confirming, and lets a member leave from theirs", async () => {
+    const owner = new Machine();
+    await owner.login("carder");
+    await owner.createLobby("card-lobby");
+    const link = (await owner.cli(owner.home, "invite")).match(/https?:\/\/\S+\/invite\/[\w-]+/)![0];
+    const member = new Machine();
+    await member.login("cardmember");
+    await member.cli(member.home, "accept", link);
+
+    const memberPage = await signedIn(member);
+    await memberPage.getByRole("button", { name: "Leave card-lobby" }).click();
+    await memberPage.getByRole("dialog").getByRole("button", { name: "Leave lobby" }).click();
+    await pwExpect(memberPage.getByText("No lobbies yet")).toBeVisible();
+
+    const page = await signedIn(owner);
+    await pwExpect(page.getByRole("link", { name: /card-lobby/ })).toBeVisible();
+    if (SCREENSHOTS) await page.screenshot({ path: `${SCREENSHOTS}/hosted-lobbies.png` });
+    await page.getByRole("button", { name: "Delete card-lobby" }).click();
+    await pwExpect(page.getByRole("dialog")).toContainText("can't be undone");
+    if (SCREENSHOTS) {
+      await page.waitForTimeout(300); // the dialog fades in
+      await page.screenshot({ path: `${SCREENSHOTS}/hosted-delete-confirm.png` });
+    }
+    await page.getByRole("dialog").getByRole("button", { name: "Cancel" }).click();
+    await pwExpect(page.getByRole("link", { name: /card-lobby/ })).toBeVisible();
+
+    await page.getByRole("button", { name: "Delete card-lobby" }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Delete lobby" }).click();
+    await pwExpect(page.getByText("No lobbies yet")).toBeVisible();
+    if (SCREENSHOTS) await page.screenshot({ path: `${SCREENSHOTS}/hosted-empty.png` });
   });
 });
 

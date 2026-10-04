@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { api, lobbyName, type Lobby } from "./api";
+import { api, lobbyName, type Lobby, type Me } from "./api";
+import { DeleteLobbyModal } from "./LobbyPage";
 import { Modal, StatusDot } from "./ui";
 
 const ROLE_LABEL: Record<string, string> = { host: "Owner", member: "Member", observer: "Viewer" };
@@ -31,30 +32,46 @@ function PromptModal(props: { title: string; label: string; placeholder: string;
   );
 }
 
-function LobbyCard({ lobby }: { lobby: Lobby }) {
+function LobbyCard({ lobby, onDelete }: { lobby: Lobby; onDelete: () => void }) {
   const agents = lobby.roster.filter((a) => a.client !== "cli");
-  const people = lobby.roster.length - agents.length;
+  const people = lobby.people.length;
   const online = agents.filter((a) => a.status !== "offline").length;
+  const label = lobby.myRole === "host" ? "Delete" : lobby.myRole ? "Leave" : "Remove";
   return (
-    <a className="lobby-card" href={`#/lobbies/${lobby.lobbyId}`}>
-      <div className="lobby-card-head">
-        <b>{lobbyName(lobby)}</b>
-        {lobby.myRole && <span className="tag">{ROLE_LABEL[lobby.myRole]}</span>}
-      </div>
-      <div className="constellation" aria-hidden="true">
-        {agents.map((a) => <StatusDot key={a.agentId} status={a.status} />)}
-        {agents.length === 0 && <span className="muted">no agents yet</span>}
-      </div>
-      <div className="lobby-card-foot muted">
-        <span>{online}/{agents.length} agents online · {people} {people === 1 ? "person" : "people"}</span>
-        <span><StatusDot status={lobby.connection === "live" ? "active" : "offline"} /> {lobby.connection}</span>
-      </div>
-    </a>
+    <div className="lobby-card-wrap">
+      <a className="lobby-card" href={`#/lobbies/${lobby.lobbyId}`}>
+        <div className="lobby-card-head">
+          <b>{lobbyName(lobby)}</b>
+          {lobby.myRole && <span className="tag">{ROLE_LABEL[lobby.myRole]}</span>}
+        </div>
+        <div className="constellation" aria-hidden="true">
+          {agents.map((a) => <StatusDot key={a.agentId} status={a.status} />)}
+          {agents.length === 0 && <span className="muted">no agents yet</span>}
+        </div>
+        <div className="lobby-card-foot muted">
+          <span>{online}/{agents.length} agents online · {people} {people === 1 ? "person" : "people"}</span>
+          <span><StatusDot status={lobby.connection === "live" ? "active" : "offline"} /> {lobby.connection}</span>
+        </div>
+      </a>
+      {/* Outside the link, so clicking it never opens the lobby. */}
+      <button className="icon-btn card-delete" aria-label={`${label} ${lobbyName(lobby)}`} title={label} onClick={onDelete}>
+        <TrashIcon />
+      </button>
+    </div>
   );
 }
 
-export function LobbiesPage({ lobbies, onChange }: { lobbies: Lobby[]; onChange: () => void }) {
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 16 16" className="trash" aria-hidden="true">
+      <path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5M7 7v4M9 7v4" />
+    </svg>
+  );
+}
+
+export function LobbiesPage({ lobbies, me, onChange }: { lobbies: Lobby[]; me: Me | null; onChange: () => void }) {
   const [dialog, setDialog] = useState<"create" | "join" | null>(null);
+  const [deleting, setDeleting] = useState<Lobby | null>(null);
   const goTo = (lobbyId: string) => { onChange(); location.hash = `#/lobbies/${lobbyId}`; };
 
   return (
@@ -70,8 +87,9 @@ export function LobbiesPage({ lobbies, onChange }: { lobbies: Lobby[]; onChange:
         </div>
       </div>
       {lobbies.length === 0
-        ? <div className="empty"><b>No lobbies yet</b><p className="muted">Create one, or join with an invite link.</p></div>
-        : <div className="lobby-grid">{lobbies.map((l) => <LobbyCard key={l.lobbyId} lobby={l} />)}</div>}
+        ? <div className="empty"><b>No lobbies yet</b><p className="muted">Create one, or join with an invite link. New here? Follow the <a href="#/get-started">get started guide</a>.</p></div>
+        : <div className="lobby-grid">{lobbies.map((l) => <LobbyCard key={l.lobbyId} lobby={l} onDelete={() => setDeleting(l)} />)}</div>}
+      {deleting && <DeleteLobbyModal lobby={deleting} me={me} onClose={() => { setDeleting(null); onChange(); }} />}
       {dialog === "create" && (
         <PromptModal title="Create lobby" label="Name" placeholder="food-app" action="Create" onClose={() => setDialog(null)}
           onSubmit={(name) => api.createLobby(name).then((r) => goTo(r.lobbyId))} />

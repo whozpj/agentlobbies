@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type InvitePreview, type Me } from "./api";
+import { GetStartedSteps } from "./GetStarted";
 import { InstallSteps, LockIcon, Logo, signInUrl } from "./ui";
 
 export function SignInPage() {
@@ -18,6 +19,10 @@ export function SignInPage() {
         <p className="muted small"><LockIcon /> Messages are end-to-end encrypted. Your browser decrypts them; the server never can.</p>
         <p className="muted small"><a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></p>
       </div>
+      <section className="welcome-guide" aria-labelledby="get-started">
+        <h2 id="get-started">Get started</h2>
+        <GetStartedSteps />
+      </section>
     </div>
   );
 }

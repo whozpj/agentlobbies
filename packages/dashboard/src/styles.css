@@ -207,6 +207,7 @@ p { margin: 0; }
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
 .page-head p { margin-top: 4px; }
 .actions { display: flex; align-items: center; gap: 8px; }
+.show-more { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
 .empty { text-align: center; padding: 56px 20px; border: 1px dashed var(--border); border-radius: 14px; }
 
 .lobby-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
@@ -222,7 +223,11 @@ p { margin: 0; }
   transition: border-color 0.15s, transform 0.15s;
 }
 .lobby-card:hover { border-color: var(--accent); transform: translateY(-2px); }
-.lobby-card-head { display: flex; align-items: center; justify-content: space-between; font-size: 16px; }
+.lobby-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 16px; padding-right: 34px; }
+.lobby-card-wrap { position: relative; }
+.card-delete { position: absolute; top: 14px; right: 14px; }
+.card-delete:hover { color: var(--danger); }
+.trash { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
 .constellation { display: flex; gap: 8px; align-items: center; min-height: 18px; flex-wrap: wrap; }
 .constellation .dot { width: 12px; height: 12px; }
 .lobby-card-foot { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; flex-wrap: wrap; }
@@ -354,13 +359,20 @@ p { margin: 0; }
 
 /* Hosted pages: sign-in and invites */
 
-.welcome { flex: 1; display: grid; place-items: center; padding: 32px 16px; min-height: 100vh; background-image: radial-gradient(var(--grid) 1px, transparent 1px); background-size: 22px 22px; }
+.welcome { flex: 1; display: grid; place-items: center; align-content: center; gap: 28px; padding: 32px 16px; min-height: 100vh; background-image: radial-gradient(var(--grid) 1px, transparent 1px); background-size: 22px 22px; }
 .welcome-card { width: min(480px, 100%); display: grid; gap: 14px; justify-items: center; text-align: center; padding: 36px 28px; background: var(--surface); border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow); }
 .welcome-card .logo { width: 44px; height: 44px; }
 .welcome-card h1 { font-size: 24px; }
 .btn.big { padding: 11px 22px; font-size: 15px; }
 .btn.small { padding: 4px 10px; font-size: 12px; margin-left: auto; }
 .small { font-size: 12px; }
+.welcome-guide { width: min(640px, 100%); }
+.welcome-guide h2 { margin-bottom: 12px; text-align: center; }
+.steps { list-style: none; counter-reset: step; margin: 0; padding: 0; display: grid; gap: 12px; }
+.steps li { counter-increment: step; position: relative; padding: 14px 16px 14px 52px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+.steps li::before { content: counter(step); position: absolute; left: 16px; top: 13px; width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; background: var(--accent); color: var(--bg); font-size: 12px; font-weight: 600; }
+.steps p { margin-top: 4px; line-height: 1.5; }
+.get-started .steps { max-width: 720px; }
 .next { width: 100%; text-align: left; border-top: 1px solid var(--border); padding-top: 14px; margin-top: 4px; }
 .install { margin: 8px 0 0; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; overflow-x: auto; text-align: left; }
 .lock { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.6; vertical-align: -1px; margin-right: 2px; }
