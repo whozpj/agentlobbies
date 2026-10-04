@@ -114,7 +114,8 @@ export function createServer(call: DaemonCall, options: { askToAllowHooks?: bool
   server.registerTool("lobby_ask", {
     description:
       "Ask another agent a question when you need information you cannot find in your own workspace, such as an API shape or a " +
-      "decision another agent owns. Use to = a handle, or 'owner:<area>'. Do not guess instead of asking. The answer arrives later.",
+      "decision another agent owns. Use to = a handle, 'owner:<area>', or 'all' to ask everyone. Do not guess instead of asking. " +
+      "The answer arrives later.",
     inputSchema: { to: z.string(), question: z.string().min(1).max(16_000), attachments: Attachments },
   }, (args) => withNewMessages(async () => {
     const r = await call("message.send", { to: args.to, type: "question", body: args.question, attachments: args.attachments });
@@ -132,7 +133,8 @@ export function createServer(call: DaemonCall, options: { askToAllowHooks?: bool
   }));
 
   server.registerTool("lobby_post", {
-    description: "Tell other agents about a change that affects them, such as a changed API, schema, or shared type. Use to='all' or '#topic'. Do not post routine progress.",
+    description: "Tell other agents about a change that affects them, such as a changed API, schema, or shared type. Use to='all' or '#topic'. " +
+      "Not for questions (use lobby_ask, which others answer). Do not post routine progress.",
     inputSchema: { body: z.string().min(1).max(16_000), to: z.string().optional() },
   }, (args) => withNewMessages(async () => {
     const r = await call("message.send", { to: args.to ?? "all", type: "update", body: args.body });
