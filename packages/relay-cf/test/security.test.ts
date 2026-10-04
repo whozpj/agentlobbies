@@ -140,6 +140,24 @@ describe("browser sessions", () => {
     expect((await web("/v1/me", cookie)).status).toBe(401);
   });
 
+  it("won't let a newer sign-in keep using a device registered by an earlier one", async () => {
+    const lobby = await createLobby("relogin-tab");
+    const first = await webSignIn("owner-relogin-tab");
+    const { machineId } = await (await web("/v1/me/devices", first, { method: "POST", body: { boxPublicKey: await boxKey(), name: "Web browser" } }))
+      .json<{ machineId: string }>();
+    const second = await webSignIn("owner-relogin-tab"); // the same browser signs in again
+
+    expect((await web(`/v1/lobbies/${lobby.lobbyId}/keys?device=${machineId}`, second)).status).toBe(403);
+    const devices = await (await web("/v1/me/devices", second)).json<{ deviceId: string; current: boolean }[]>();
+    expect(devices.find((d) => d.deviceId === machineId)?.current).toBe(false);
+
+    // It registers its own device instead, and revoking that ends the newer sign-in too.
+    const own = await (await web("/v1/me/devices", second, { method: "POST", body: { boxPublicKey: await boxKey(), name: "Web browser" } }))
+      .json<{ machineId: string }>();
+    expect((await web(`/v1/me/devices/${own.machineId}`, second, { method: "DELETE" })).status).toBe(200);
+    expect((await web("/v1/me/devices", second, { method: "POST", body: { boxPublicKey: await boxKey(), name: "again" } })).status).toBe(401);
+  });
+
   it("refuses a session cookie from before sessions could be ended", async () => {
     const old = "__Host-session=eyJhbGciOiJFZERTQSJ9.eyJraW5kIjoid2ViIn0.c2ln";
     expect((await web("/v1/me", old)).status).toBe(401);
@@ -197,6 +215,15 @@ describe("limits", () => {
       headers: { authorization: `Bearer ${owner.token}`, "content-type": "application/json", "cf-connecting-ip": randomIp() },
     } as RequestInit);
     expect(res.status).toBe(413);
+  });
+
+  it("holds the device limit when many registrations arrive at once", async () => {
+    const cookie = await webSignIn("racer");
+    const keys = await Promise.all(Array.from({ length: 30 }, () => boxKey()));
+    const statuses = await Promise.all(keys.map((boxPublicKey, i) =>
+      web("/v1/me/devices", cookie, { method: "POST", body: { boxPublicKey, name: `b${i}` } }).then((r) => r.status)));
+    expect(statuses.filter((s) => s === 201)).toHaveLength(20);
+    expect(statuses.filter((s) => s === 429)).toHaveLength(10);
   });
 
   it("counts machine sign-ins toward the daily device limit", async () => {

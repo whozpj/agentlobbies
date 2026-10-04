@@ -191,7 +191,8 @@ function useDevice(me: Me): void {
     const name = `Web browser (${navigator.platform || "unknown"})`;
     return (await send<{ machineId: string }>("POST", "/v1/me/devices", { boxPublicKey, name })).machineId;
   };
-  const stillRegistered = async (machineId: string) => (await request<Device[]>("/v1/me/devices")).some((d) => d.deviceId === machineId);
+  // The relay marks the device registered by this sign-in as current; one from an earlier sign-in can't be reused.
+  const stillRegistered = async (machineId: string) => (await request<Device[]>("/v1/me/devices")).some((d) => d.deviceId === machineId && d.current);
   device = ensureDevice(me.userId, register, stillRegistered);
 }
 

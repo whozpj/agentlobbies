@@ -125,10 +125,8 @@ async function signInWithGitHub(req: Request, env: Env): Promise<Response> {
   const body = await parseBody(req, GitHubSignInBody);
   if (body.boxPublicKey !== undefined) await requireBoxKey(body.boxPublicKey);
   const user = await userFromGitHub(env, body.githubToken);
-  await limitDevices(env, user.userId);
   const machineId = ulid();
-  await env.DB.prepare("INSERT INTO machines (machine_id, user_id, public_key, box_public_key, name, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-    .bind(machineId, user.userId, body.machinePublicKey, body.boxPublicKey ?? null, body.machineName, Date.now()).run();
+  await insertDevice(env, { machineId, userId: user.userId, publicKey: body.machinePublicKey, boxPublicKey: body.boxPublicKey ?? null, name: body.machineName, sessionId: null });
   await forEachLobbyOf(env, user.userId, (lobby) => lobby.refreshKeys());
 
   const token = await issueAccountJwt(env, { userId: user.userId, machineId });
@@ -170,13 +168,10 @@ async function registerBoxKey(req: Request, env: Env): Promise<Response> {
 async function addBrowserDevice(req: Request, env: Env): Promise<Response> {
   const account = await requireAccount(req, env);
   if (!account.sessionId) throw new ProtocolError("forbidden", "only a browser registers this way");
-  await limitDevices(env, account.userId);
   const { boxPublicKey, name } = await parseBody(req, DeviceBody);
   await requireBoxKey(boxPublicKey);
   const machineId = ulid();
-  await env.DB.prepare(
-    "INSERT INTO machines (machine_id, user_id, public_key, box_public_key, name, created_at, session_id) VALUES (?, ?, '', ?, ?, ?, ?)",
-  ).bind(machineId, account.userId, boxPublicKey, name, Date.now(), account.sessionId).run();
+  await insertDevice(env, { machineId, userId: account.userId, publicKey: "", boxPublicKey, name, sessionId: account.sessionId });
   await forEachLobbyOf(env, account.userId, (lobby) => lobby.refreshKeys());
   return Response.json({ machineId }, { status: 201 });
 }
@@ -238,9 +233,11 @@ async function browserKeys(req: Request, env: Env, params: Params): Promise<Resp
   const account = await requireAccount(req, env);
   if (!(await membership(env, params.lobbyId, account.userId))) throw new ProtocolError("forbidden");
   const machineId = new URL(req.url).searchParams.get("device") ?? "";
-  const device = await env.DB.prepare("SELECT 1 AS ok FROM machines WHERE machine_id = ? AND user_id = ? AND revoked_at IS NULL")
-    .bind(machineId, account.userId).first<{ ok: number }>();
+  const device = await env.DB.prepare("SELECT session_id FROM machines WHERE machine_id = ? AND user_id = ? AND revoked_at IS NULL")
+    .bind(machineId, account.userId).first<{ session_id: string | null }>();
   if (!device) throw new ProtocolError("forbidden", "that isn't one of your devices");
+  // A browser device belongs to the sign-in that registered it, so revoking it ends everything that used it.
+  if (account.sessionId && device.session_id !== account.sessionId) throw new ProtocolError("forbidden", "that device belongs to another sign-in");
   return Response.json(await lobbyStub(env, params.lobbyId!).sealedKeysFor(machineId));
 }
 
@@ -687,12 +684,26 @@ function requireSameOrigin(req: Request, env: Env): void {
   if (req.headers.get("origin") !== new URL(env.PUBLIC_URL).origin) throw new ProtocolError("forbidden", "cross-site request");
 }
 
-/** New devices a day, and devices in total, so one account can't fill a lobby's key list. */
-async function limitDevices(env: Env, userId: string): Promise<void> {
-  await limitPerDay(env, "SELECT COUNT(*) AS n FROM machines WHERE user_id = ? AND created_at > ?", userId, ACCOUNT_LIMITS.devicesPerDay, "new devices");
-  const active = await env.DB.prepare("SELECT COUNT(*) AS n FROM machines WHERE user_id = ? AND revoked_at IS NULL").bind(userId).first<{ n: number }>();
-  if ((active?.n ?? 0) >= ACCOUNT_LIMITS.devices) {
-    throw new ProtocolError("rate_limited", `you have ${ACCOUNT_LIMITS.devices} devices signed in; revoke one from the Account page first`);
+/**
+ * Adds a machine or browser, within the limits on new devices a day and devices in total. The check
+ * and the insert are one statement, so sign-ins arriving at the same time can't race past the limits.
+ */
+async function insertDevice(
+  env: Env, d: { machineId: string; userId: string; publicKey: string; boxPublicKey: string | null; name: string; sessionId: string | null },
+): Promise<void> {
+  const now = Date.now();
+  const result = await env.DB.prepare(
+    `INSERT INTO machines (machine_id, user_id, public_key, box_public_key, name, created_at, session_id)
+     SELECT ?, ?, ?, ?, ?, ?, ?
+     WHERE (SELECT COUNT(*) FROM machines WHERE user_id = ? AND created_at > ?) < ?
+       AND (SELECT COUNT(*) FROM machines WHERE user_id = ? AND revoked_at IS NULL) < ?`,
+  ).bind(
+    d.machineId, d.userId, d.publicKey, d.boxPublicKey, d.name, now, d.sessionId,
+    d.userId, now - DAY_MS, ACCOUNT_LIMITS.devicesPerDay, d.userId, ACCOUNT_LIMITS.devices,
+  ).run();
+  if (result.meta.changes === 0) {
+    throw new ProtocolError("rate_limited",
+      `too many devices: ${ACCOUNT_LIMITS.devicesPerDay} new ones a day and ${ACCOUNT_LIMITS.devices} signed in at once; revoke one from the Account page`);
   }
 }
 

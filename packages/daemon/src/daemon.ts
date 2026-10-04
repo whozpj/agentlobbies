@@ -114,6 +114,8 @@ export class Daemon extends EventEmitter {
   private readonly people = new Map<string, LobbyPerson[]>();
   /** Lobbies whose key must change (someone left) before anything more is sent. */
   private readonly rotating = new Set<string>();
+  /** How many times each outgoing message was sealed again after a key change. */
+  private readonly reseals = new Map<string, number>();
 
   constructor(private readonly opts: { home: string; relayUrl: string; dashboardDir?: string }) {
     super();
@@ -491,7 +493,7 @@ export class Daemon extends EventEmitter {
   };
 
 
-  private async sendMessage(seat: Seat, p: Params, retried = false): Promise<{ id: string; seq?: number; queued?: boolean }> {
+  private async sendMessage(seat: Seat, p: Params): Promise<{ id: string; seq?: number; queued?: boolean }> {
     const body = String(p.body ?? "");
     const attachments = (p.attachments ?? undefined) as Envelope["attachments"];
     const texts = [body];
@@ -539,11 +541,6 @@ export class Daemon extends EventEmitter {
 
     const reply = await this.waitForReply(reqId);
     if (!reply) return { id: envelope.id, queued: true };
-    // Someone just left and the new key hadn't reached this machine: write it again under the new key.
-    if (reply.t === "err" && reply.code === "key_rotating" && !retried) {
-      await new Promise((resolve) => setTimeout(resolve, reply.retryAfterMs ?? 1_000));
-      return this.sendMessage(seat, p, true);
-    }
     if (reply.t === "err") throw new DaemonError(reply.code, reply.message);
     return { id: envelope.id, seq: reply.seq };
   }
@@ -774,7 +771,17 @@ export class Daemon extends EventEmitter {
   }
 
   private onReply(seat: Seat, frame: OkOrErr): void {
+    if (frame.t === "err" && frame.code === "key_rotating") {
+      void this.resealAndResend(seat, frame.reqId!);
+      return;
+    }
+    this.finishReply(seat, frame);
+  }
+
+  /** The relay accepted or refused a message for good: record it and tell whoever is waiting. */
+  private finishReply(seat: Seat, frame: OkOrErr): void {
     const reqId = frame.reqId!;
+    this.reseals.delete(reqId);
     this.db.finishOutbox(reqId, frame.t === "ok" ? "done" : "failed");
     if (frame.t === "ok" && frame.seq) {
       const sent = this.db.outboxFrame(reqId) as { envelope: Envelope } | undefined;
@@ -792,6 +799,39 @@ export class Daemon extends EventEmitter {
     this.waiters.delete(reqId);
   }
 
+
+  /**
+   * The lobby switched keys (someone left) before this message went out, whether it was just written or
+   * queued while offline. Seal it again under the new key, keeping its id, and send it again.
+   */
+  private async resealAndResend(seat: Seat, reqId: string): Promise<void> {
+    const attempts = (this.reseals.get(reqId) ?? 0) + 1;
+    this.reseals.set(reqId, attempts);
+    const sent = this.db.outboxFrame(reqId) as { envelope: Envelope } | undefined;
+    const opened = sent && this.openEnvelope(seat.lobby_id, sent.envelope);
+    let lobbyKey: { epoch: number; key: Uint8Array } | undefined;
+    if (opened && opened !== "locked" && opened !== "broken" && attempts <= 3) {
+      try {
+        lobbyKey = await this.waitForLobbyKey(seat.lobby_id);
+      } catch {
+        lobbyKey = undefined;
+      }
+    }
+    if (!sent || !opened || opened === "locked" || opened === "broken" || !lobbyKey) {
+      this.finishReply(seat, { t: "err", reqId, code: "key_rotating", message: "the lobby switched keys and this message couldn't be sent again" });
+      return;
+    }
+
+    const e = sent.envelope;
+    const content = opened.attachments ? { body: opened.body ?? "", attachments: opened.attachments } : { body: opened.body ?? "" };
+    const sealed = encryptContent(lobbyKey.key, { lobbyId: e.lobbyId, id: e.id, from: e.from, type: e.type, epoch: lobbyKey.epoch }, content);
+    const unsigned: Omit<Envelope, "sig"> = { v: 2, id: e.id, lobbyId: e.lobbyId, from: e.from, to: e.to, type: e.type, threadDepth: e.threadDepth, sealed, createdAt: e.createdAt };
+    if (e.inReplyTo) unsigned.inReplyTo = e.inReplyTo;
+    const frame = { t: "send" as const, reqId, envelope: await signEnvelope(webCrypto, loadKey(this.opts.home, seat.seat_id), unsigned) };
+    this.db.replaceOutboxFrame(reqId, frame);
+    const conn = this.connections.get(seat.seat_id);
+    if (conn?.state === "live") conn.send(frame); // otherwise it goes out with the rest of the outbox on reconnect
+  }
 
   /** Disconnects this machine's seats in a lobby and erases what it kept about it. */
   private forgetLobby(lobbyId: string): void {
@@ -1002,11 +1042,15 @@ export class Daemon extends EventEmitter {
       const epoch = frame.current + 1;
       const key = newLobbyKey();
       const sealed = [];
-      for (const machine of frame.machines) {
+      // This machine first: the batch that creates the key must include its own copy.
+      const machines = [...frame.machines].sort((a, b) => Number(b.machineId === account.machine_id) - Number(a.machineId === account.machine_id));
+      for (const machine of machines) {
         const one = await sealFor(machine, lobbyId, epoch, key);
         if (one) sealed.push(one);
       }
-      conn.send({ t: "keys.put", reqId: ulid(), epoch, create: true, sealed });
+      const [first = [], ...rest] = batches(sealed);
+      conn.send({ t: "keys.put", reqId: ulid(), epoch, create: true, sealed: first });
+      for (const batch of rest) conn.send({ t: "keys.put", reqId: ulid(), epoch, create: false, sealed: batch });
       return;
     }
 
@@ -1023,7 +1067,9 @@ export class Daemon extends EventEmitter {
         byEpoch.get(epoch)!.push(one);
       }
     }
-    for (const [epoch, sealed] of byEpoch) conn.send({ t: "keys.put", reqId: ulid(), epoch, create: false, sealed });
+    for (const [epoch, sealed] of byEpoch) {
+      for (const batch of batches(sealed)) conn.send({ t: "keys.put", reqId: ulid(), epoch, create: false, sealed: batch });
+    }
   }
 
   /** Decrypts an envelope with this machine's key for its epoch: "locked" if the key hasn't arrived, "broken" if it fails. */
@@ -1178,6 +1224,13 @@ function peopleFromRoster(roster: AgentProfile[]): LobbyPerson[] {
     if (seat.client === "cli" && seat.owner) byLogin.set(seat.owner.login, { ...seat.owner, role: role[seat.role] });
   }
   return [...byLogin.values()];
+}
+
+/** Splits sealed keys into the most one keys.put frame may carry. */
+function batches<T>(items: T[]): T[][] {
+  const out = [];
+  for (let i = 0; i < items.length; i += LIMITS.maxMachinesPerLobby) out.push(items.slice(i, i + LIMITS.maxMachinesPerLobby));
+  return out;
 }
 
 /** Seals a lobby key to one machine, or skips it if its key can't be used, so one bad key can't stop the others. */

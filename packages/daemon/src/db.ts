@@ -311,6 +311,10 @@ export class Db {
     return row && JSON.parse(row.frame_json);
   }
 
+  replaceOutboxFrame(reqId: string, frame: unknown): void {
+    this.db.prepare("UPDATE outbox SET frame_json = ? WHERE req_id = ?").run(JSON.stringify(frame), reqId);
+  }
+
   finishOutbox(reqId: string, state: "done" | "failed"): void {
     this.db.prepare("UPDATE outbox SET state = ? WHERE req_id = ?").run(state, reqId);
   }

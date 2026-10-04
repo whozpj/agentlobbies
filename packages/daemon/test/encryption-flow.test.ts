@@ -1,8 +1,10 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { toB64u } from "@agentlobbies/protocol";
 import { afterEach, describe, expect, inject, it } from "vitest";
 import { Daemon } from "../src/daemon";
+import { generateBoxKeys } from "../src/encryption";
 import { add, agentSession, eventually, freshUser } from "./lobby-helpers";
 
 const relayUrl = inject("relayUrl");
@@ -78,5 +80,49 @@ describe("end-to-end encryption between machines", () => {
     // The relay refuses anything under the old key, so this goes through only if it waited for the new one.
     expect(await alice.person("message.send", { lobbyId, to: "all", type: "update", body: "right after" })).toHaveProperty("seq");
     expect((await alice.person("lobby.status", { lobbyId })).keyEpoch).toBe(2);
+  });
+
+  it("sends a message queued while offline under the new key, when the lobby switched keys meanwhile", async () => {
+    const alice = await startDaemon(freshUser("alice"));
+    const { lobbyId } = await alice.daemon.call("lobby.create", { name: "queued" });
+    const bob = await startDaemon(freshUser("bob"));
+    const carol = await startDaemon(freshUser("carol"));
+    for (const other of [bob, carol]) {
+      const { url } = await alice.daemon.call("invite.create", { lobbyId });
+      await other.daemon.call("invite.accept", { invite: url });
+      await eventually(() => other.person("lobby.status", { lobbyId }), (s) => s.keyEpoch === 1);
+    }
+
+    // Alice's machine loses its connection, and she writes a message, which waits in the outbox.
+    const connections = [...(alice.daemon as unknown as { connections: Map<string, { stop(): void; start(): Promise<void> }> }).connections.values()];
+    for (const conn of connections) conn.stop();
+    expect(await alice.person("message.send", { lobbyId, to: "all", type: "update", body: "written offline" })).toMatchObject({ queued: true });
+
+    // Meanwhile Carol is removed, and Bob's machine makes the new key.
+    await alice.daemon.call("lobby.removeMember", { lobbyId, login: "carol" });
+    await eventually(() => bob.person("lobby.status", { lobbyId }), (s) => s.keyEpoch === 2);
+
+    for (const conn of connections) void conn.start();
+    const messages = await eventually(() => bob.daemon.call("dashboard.messages", { lobbyId }), (m) => m.some((x: { body: string }) => x.body === "written offline"));
+    expect(messages.find((x: { body: string }) => x.body === "written offline")).toMatchObject({ from: "alice" });
+  }, 60_000);
+
+  it("hands out a lobby key in batches small enough for the relay, the first one making the key", async () => {
+    const alice = await startDaemon(freshUser("alice"));
+    await alice.daemon.call("lobby.create", { name: "crowded" });
+    const internals = alice.daemon as unknown as {
+      db: { activeSeats(): { lobby_id: string }[]; account(): { machine_id: string } };
+      onKeys(seat: unknown, conn: unknown, frame: unknown): Promise<void>;
+    };
+    const seat = internals.db.activeSeats()[0]!;
+    const own = { machineId: internals.db.account().machine_id, boxPublicKey: toB64u((await generateBoxKeys()).publicKey) };
+    const others = await Promise.all(Array.from({ length: 299 }, async (_, i) => ({
+      machineId: `01J${String(i).padStart(23, "0")}`, boxPublicKey: toB64u((await generateBoxKeys()).publicKey),
+    })));
+    const sent: { create: boolean; sealed: { machineId: string }[] }[] = [];
+    await internals.onKeys(seat, { send: (f: never) => sent.push(f) }, { t: "keys", current: 0, rotate: false, mine: [], machines: [...others, own], missing: [] });
+
+    expect(sent.map((f) => [f.create, f.sealed.length])).toEqual([[true, 256], [false, 44]]);
+    expect(sent[0]!.sealed[0]!.machineId).toBe(own.machineId);
   });
 });
