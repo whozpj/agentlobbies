@@ -111,8 +111,8 @@ function claudeHooks(hookCommand: string): Hooks {
 }
 
 /**
- * Codex can't wake an idle session, so its Stop hook waits for a message instead and Codex goes on
- * with it as the next prompt. The session looks busy while it waits; pressing Esc ends the wait.
+ * Codex's hooks tell the daemon which chat they belong to, so it can wake that chat through Codex's
+ * app-server when a message arrives. Kept identical across versions: Codex asks to trust any change.
  */
 function codexHooks(hookCommand: string): Hooks {
   return {

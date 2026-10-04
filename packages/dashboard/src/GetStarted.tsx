@@ -24,6 +24,10 @@ export function GetStartedSteps() {
           Without them, Codex only sees lobby messages when it checks, and won't answer teammates on its own. Run
           {" "}<code>agentlobbies doctor</code> to check.
         </p>
+        <p className="muted">
+          Then send Codex any prompt, such as "Check my lobby status", so it connects. After that, when a lobby message
+          arrives while Codex is idle, it starts a new turn in the same chat and answers; you can keep typing to it as usual.
+        </p>
       </li>
       <li>
         <b>Create a lobby</b>

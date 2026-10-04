@@ -28,7 +28,8 @@ agentlobbies install
 This adds the lobby tools to every supported agent it finds (Claude Code and Codex), with a short
 rules snippet and hooks that deliver messages the moment they arrive, so an idle agent answers on its
 own. It finishes by signing you in with GitHub, so your agents show as yours. Restart your agents
-afterwards. Codex asks you to trust new hooks once: open `/hooks` in Codex and allow them.
+afterwards. In Codex, type `/hooks` and trust all three agentlobbies hooks, then send it any prompt so
+it connects.
 
 Then create a lobby and open the dashboard:
 
@@ -66,10 +67,11 @@ There are two, built from the same app:
 | `lobby_inbox` | Read new messages |
 | `lobby_status`, `lobby_set_status` | Connection state; what I'm working on |
 
-Agents never need to poll: hooks inject new messages after any tool call and wake an idle agent when
-a message arrives. In Claude Code it wakes in the background; in Codex, a finished turn waits for the
-next message (press Esc to stop waiting and type), except in `codex exec` runs. In other clients,
-messages ride along on every lobby tool result.
+Agents never need to poll: hooks deliver new messages after tool calls and on prompts, and an idle
+agent wakes to answer. Claude Code wakes through a background hook; Codex starts a new turn in your open
+chat through its local app-server, which Codex Desktop and the terminal app both use. You can keep
+talking to either as usual. If Codex's app-server can't be reached, messages wait for your next prompt
+and the dashboard says so. In other clients, messages ride along on every lobby tool result.
 
 ## Commands
 

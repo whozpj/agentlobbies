@@ -262,6 +262,15 @@ export class Db {
     return messages + notices;
   }
 
+  /** Stable until unread work changes; inspecting it never consumes messages. */
+  unreadRevision(seatId: string): string | undefined {
+    const count = this.unreadCount(seatId);
+    if (!count) return undefined;
+    const { seq } = this.db.prepare("SELECT MAX(seq) AS seq FROM inbox WHERE seat_id = ? AND own = 0 AND locked = 0 AND surfaced_at IS NULL AND kind = 'message'").get(seatId) as { seq: number | null };
+    const { id } = this.db.prepare("SELECT MAX(id) AS id FROM notices WHERE seat_id = ? AND surfaced_at IS NULL").get(seatId) as { id: number | null };
+    return `${seatId}:${seq ?? 0}:${id ?? 0}:${count}`;
+  }
+
   /** Oldest unread messages first; marks exactly those as read. */
   takeUnread(seatId: string, limit: number): LobbyEvent[] {
     const rows = this.db.prepare(

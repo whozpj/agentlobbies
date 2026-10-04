@@ -65,6 +65,12 @@ export function AgentsPage({ agents }: { agents: MyAgent[] }) {
                         <a href="#/get-started">How</a>
                       </div>
                     )}
+                    {a.online && a.hooksAllowed !== false && a.wakeAvailable === false && !a.secure && (
+                      <div className="small warning">
+                        Automatic replies unavailable: this Codex chat needs the local app-server connection. Messages stay
+                        queued for your next prompt. <a href="#/get-started">How</a>
+                      </div>
+                    )}
                     {(a.pendingApprovals ?? 0) > 0 && (
                       isHosted
                         ? <div className="muted small">{a.pendingApprovals} waiting for approval: open <code>agentlobbies dashboard</code> on {a.machine}</div>

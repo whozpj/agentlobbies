@@ -18,6 +18,7 @@ import { DaemonError } from "./rpc";
 import { UserLink } from "./user-link";
 
 import { CLIENT_VERSION } from "./version";
+import { CodexWake, type CodexBinding } from "./codex-wake";
 
 export { CLIENT_VERSION };
 
@@ -98,6 +99,8 @@ export function seatKeyFor(client: string, cwd: string): string {
  * Emits "notify" with { method, params } for push notifications.
  */
 export class Daemon extends EventEmitter {
+  private readonly codexListeners = new Map<string, CodexWake>();
+  private readonly codexReady = new Set<string>();
   private db!: Db;
   private running = false;
   private readonly sessions = new Map<string, Session>();
@@ -137,6 +140,8 @@ export class Daemon extends EventEmitter {
 
   async stop(): Promise<void> {
     if (!this.running) return;
+    for (const listener of this.codexListeners.values()) listener.close();
+    this.codexListeners.clear();
     for (const seatId of [...this.pendingAcks.keys()]) this.flushAck(seatId);
     await this.dashboard?.close();
     this.userLink?.stop();
@@ -231,6 +236,12 @@ export class Daemon extends EventEmitter {
         this.db.upsertLocalAgent(seatKey, client, realpathSync(cwd));
         this.connectAgent(seatKey);
         this.emit("activity", { type: "agents" });
+        if (client === "codex") {
+          const saved = this.db.setting(`codex.binding:${seatKey}`);
+          if (saved) {
+            try { void this.call("codex.attach", { sessionId, ...JSON.parse(saved) }).catch(() => {}); } catch { /* stale local binding */ }
+          }
+        }
       }
       const seat = this.db.activeSeat(seatKey);
       return { sessionId, seatKey, lobby: seat ? { lobbyId: seat.lobby_id, handle: seat.handle } : null };
@@ -248,6 +259,44 @@ export class Daemon extends EventEmitter {
       }
       this.emit("activity", { type: "agents" });
       return {};
+    },
+
+    /** A trusted hook binds the lobby agent to its existing Codex chat, not a background copy. */
+    "codex.attach": async (p) => {
+      const session = this.session(p);
+      if (session.client !== "codex") throw new DaemonError("bad_request", "not a Codex session");
+      const binding: CodexBinding = { threadId: String(p.threadId ?? ""), socketPath: String(p.socketPath ?? ""), cwd: session.cwd };
+      if (!binding.threadId || !binding.socketPath.startsWith("/") || binding.socketPath.includes(":")) {
+        throw new DaemonError("bad_request", "Codex needs a thread id and a local Unix socket");
+      }
+      let listener = this.codexListeners.get(session.seatKey);
+      if (listener && (listener.binding.threadId !== binding.threadId || listener.binding.socketPath !== binding.socketPath)) {
+        listener.close();
+        this.codexListeners.delete(session.seatKey);
+        listener = undefined;
+      }
+      if (!listener) {
+        listener = new CodexWake(binding, () => {
+          if (!this.running || !this.isRunning(session.seatKey) || this.isSecure(session.seatKey)) return undefined;
+          const seat = this.db.activeSeat(session.seatKey);
+          return seat ? this.db.unreadRevision(seat.seat_id) : undefined;
+        }, (ready) => {
+          if (!this.running) return;
+          if (ready) this.codexReady.add(session.seatKey);
+          else this.codexReady.delete(session.seatKey);
+          this.emit("activity", { type: "agents" });
+        });
+        this.codexListeners.set(session.seatKey, listener);
+      }
+      try {
+        await listener.attach();
+        this.db.setSetting(`codex.binding:${session.seatKey}`, JSON.stringify({ threadId: binding.threadId, socketPath: binding.socketPath }));
+        listener.wake();
+        return { available: true };
+      } catch {
+        this.codexReady.delete(session.seatKey);
+        return { available: false };
+      }
     },
 
     // The relay creates the lobby; syncing adds this machine's person seat to it (LLD 15.6).
@@ -754,6 +803,8 @@ export class Daemon extends EventEmitter {
     const unread = this.db.unreadCount(seatId);
     const waiter = this.inboxWaiters.get(seatId);
     if (waiter) waiter({ unread });
+    const seat = this.db.seat(seatId);
+    if (seat) this.codexListeners.get(seat.seat_key)?.wake();
     this.emit("notify", { method: "inbox.new", params: { seatId, unread } });
   }
 
@@ -1192,6 +1243,7 @@ export class Daemon extends EventEmitter {
       lastUsedAt: a.last_seen_at, // when its session last started
       // Codex agents only answer on their own once the user trusts the hooks (in /hooks).
       hooksAllowed: a.client === "codex" ? this.db.setting("codex_hooks_ran") === "1" : undefined,
+      wakeAvailable: a.client === "codex" ? this.codexReady.has(a.seat_key) : undefined,
       secure: a.secure === 1,
       pendingApprovals: this.pendingCount(a.seat_key, pendingBySeat),
       lobbies: this.db.seatsFor(a.seat_key).map((s) => ({ lobbyId: s.lobby_id, name: s.lobby_name, handle: s.handle, agentId: s.agent_id })),

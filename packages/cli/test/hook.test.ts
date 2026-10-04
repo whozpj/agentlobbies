@@ -108,13 +108,14 @@ describe("agentlobbies-hook", () => {
     expect(r.stderr).toContain("are you there?");
   });
 
-  it("wakes a Codex agent the same way, with the message as its next prompt", async () => {
+  it("lets a Codex turn finish normally and preserves queued messages for its runtime listener", async () => {
     const waiting = runHook("wait", { cwd: apiDir }, "codex");
     await new Promise((r) => setTimeout(r, 500));
     await web.call("message.send", { to: "api", type: "question", body: "hello codex" });
     const r = await waiting;
-    expect(r.code).toBe(2);
-    expect(r.stderr).toContain("hello codex");
+    expect(r).toEqual({ code: 0, stdout: "", stderr: "" });
+    const messages = await api.call("inbox.pull", { limit: 25 });
+    expect(messages.some((m: { body: string }) => m.body === "hello codex")).toBe(true);
   });
 
   it("doesn't wait in a `codex exec` run, which has to finish", async () => {

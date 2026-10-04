@@ -2,6 +2,8 @@
 // Claude Code and Codex hooks that deliver lobby messages without the agent asking (see `install`).
 // Every failure exits 0 quietly: a hook must never get in the way of an agent that isn't in a lobby.
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { RpcClient, defaultHome, socketPath, type SurfacedMessage } from "@agentlobbies/daemon/client";
 import { renderPending } from "@agentlobbies/mcp-server/render";
 
@@ -9,6 +11,7 @@ const WAIT_MS = 55 * 60_000; // just under the hook's 1 hour timeout
 
 interface HookInput {
   cwd: string;
+  session_id?: string;
   tool_name?: string;
   transcript_path?: string | null;
 }
@@ -87,8 +90,28 @@ async function main(): Promise<number> {
   const client = process.argv[3] ?? "claude-code";
   const input = await readInput();
 
+  if (client === "codex") {
+    const daemon = await connect(client, input.cwd);
+    if (daemon) {
+      try {
+        if (input.session_id && !isCodexExec(input.transcript_path)) {
+          const codexHome = process.env.CODEX_HOME ?? join(homedir(), ".codex");
+          await daemon.call("codex.attach", {
+            threadId: input.session_id,
+            socketPath: join(codexHome, "app-server-control", "app-server-control.sock"),
+          }).catch(() => {});
+        }
+        // Codex finishes normally; the daemon wakes its existing chat when new messages arrive.
+        if (event === "wait") {
+          await daemon.call("presence.set", { status: "idle" }).catch(() => {});
+          return 0;
+        }
+      } finally { daemon.close(); }
+    }
+    if (event === "wait") return 0;
+  }
+
   if (event === "wait") {
-    if (client === "codex" && isCodexExec(input.transcript_path)) return 0;
     const unread = await waitForMessages(client, input.cwd);
     if (!unread) return 0;
   } else if (event === "post-tool-use" && input.tool_name?.startsWith("mcp__agentlobbies__")) {

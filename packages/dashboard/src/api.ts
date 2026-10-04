@@ -36,6 +36,7 @@ export interface MyAgent {
   online: boolean;
   lastUsedAt?: number;
   hooksAllowed?: boolean; // Codex only
+  wakeAvailable?: boolean; // A listener connected to this Codex chat's existing runtime
   secure?: boolean;
   pendingApprovals?: number;
   machineId?: string;

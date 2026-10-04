@@ -28,11 +28,13 @@
   "dependencies": {
     "@agentlobbies/protocol": "workspace:*",
     "@hpke/core": "^1.9.0",
-    "ulid": "^3.0.0"
+    "ulid": "^3.0.0",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "@agentlobbies/relay-cf": "workspace:*",
     "@types/node": "^22.0.0",
+    "@types/ws": "^8.18.2",
     "tsup": "^8.5.0",
     "typescript": "^5.9.0",
     "vitest": "^4.1.0",
