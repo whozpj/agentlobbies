@@ -121,12 +121,16 @@ describe("MCP server", () => {
     const daemon = await startDaemon();
     expect((await daemon.call("daemon.info", {})).codexHooksAllowed).toBe(false);
     const api = await agent(daemon, "codex", { askToAllowHooks: true });
-    expect(api.mcp.getInstructions()).toContain("open /hooks in Codex");
-    expect((await api.tool("lobby_status")).text).toContain("open /hooks in Codex");
-    expect((await api.tool("lobby_status")).text).not.toContain("open /hooks in Codex");
+    expect(api.mcp.getInstructions()).toContain("type /hooks in Codex and trust all three");
+    expect((await api.tool("lobby_status")).text).toContain("type /hooks in Codex and trust all three");
+    expect((await api.tool("lobby_status")).text).not.toContain("type /hooks in Codex and trust all three");
+
+    const codexAgent = async () => (await daemon.call("agents.list", {})).find((a: { client: string }) => a.client === "codex");
+    expect(await codexAgent()).toMatchObject({ hooksAllowed: false }); // the dashboard warns on it
 
     // A Codex hook connecting means the user allowed them.
     await daemon.call("session.open", { client: "codex", cwd: tmpdir(), passive: true });
     expect((await daemon.call("daemon.info", {})).codexHooksAllowed).toBe(true);
+    expect(await codexAgent()).toMatchObject({ hooksAllowed: true });
   });
 });

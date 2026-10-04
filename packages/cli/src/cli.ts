@@ -5,7 +5,7 @@ import { defineCommand, runMain } from "citty";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import pc from "picocolors";
-import { CLIENTS, detectClients, hookCommand, mcpCommand } from "./install";
+import { CLIENTS, CODEX_HOOKS_STEP, detectClients, hookCommand, mcpCommand } from "./install";
 import { githubDeviceLogin } from "./login";
 
 type Call = (method: string, params?: Record<string, unknown>) => Promise<any>;
@@ -192,12 +192,13 @@ const install = defineCommand({
       client.install(homedir(), mcpCommand(), hooks);
       const extra = hooks ? ", and instant message delivery" : "";
       console.log(`${pc.green("✓")} ${client.name}: added the agentlobbies tools and rules${extra}`);
-      if (client.id === "codex" && hooks) console.log(pc.dim("  In Codex, open /hooks once and trust the agentlobbies hooks."));
     }
     if (!hooks) {
       console.log(pc.dim("\nFor instant message delivery, install globally: npm install -g agentlobbies && agentlobbies install"));
     }
+    let codexHooksAllowed = false;
     await withLobby(async (call) => {
+      codexHooksAllowed = (await call("daemon.info")).codexHooksAllowed === true;
       if (await call("account.status")) return;
       if (!process.stdin.isTTY) {
         console.log(`\nNext, sign in: ${pc.bold("agentlobbies login")}`);
@@ -207,6 +208,7 @@ const install = defineCommand({
       await signIn(call, true);
     });
     console.log(`\nRestart your agents to load the tools. Then run ${pc.bold("agentlobbies create")} in any folder.`);
+    if (hooks && found.some((c) => c.id === "codex") && !codexHooksAllowed) console.log(`\n${pc.yellow(CODEX_HOOKS_STEP)}`);
   },
 });
 
@@ -262,9 +264,7 @@ const doctor = defineCommand({
     for (const client of detectClients(homedir())) {
       check(client.isInstalled(homedir()), `${client.name} configured`, `${client.name} not configured or out of date; run \`agentlobbies install\``);
       // Not a failure: Codex works without them, it just doesn't get messages on its own.
-      if (client.id === "codex" && !codexHooksAllowed) {
-        console.log(`${pc.yellow("!")} Codex hooks not allowed yet: open /hooks in Codex and allow the agentlobbies hooks`);
-      }
+      if (client.id === "codex" && !codexHooksAllowed) console.log(`${pc.yellow("!")} ${CODEX_HOOKS_STEP}`);
     }
     process.exitCode = failed ? 1 : 0;
   },

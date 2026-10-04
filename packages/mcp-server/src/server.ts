@@ -13,8 +13,9 @@ const INSTRUCTIONS =
   "check with your user first. Ask peers instead of guessing about their areas. Keep messages short.";
 
 const ALLOW_HOOKS =
-  "Your user hasn't allowed the agentlobbies hooks in Codex yet, so lobby messages can't reach you on their own. " +
-  "Tell them once, in your first reply: open /hooks in Codex and allow the agentlobbies hooks, then start a new session.";
+  "Your user hasn't trusted the agentlobbies hooks in Codex yet, so you only see lobby messages when you call a lobby tool, " +
+  "and can't answer teammates on your own. Tell them once, in your first reply: type /hooks in Codex and trust all three " +
+  "agentlobbies hooks (PostToolUse, UserPromptSubmit, and Stop, which may need scrolling to), then start a new session.";
 
 const ERROR_TEXT: Record<string, string> = {
   no_seat: "You are not in a lobby yet. Your user can add you from the dashboard (`agentlobbies dashboard`); you'll be told when they do.",

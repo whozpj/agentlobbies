@@ -59,6 +59,12 @@ export function AgentsPage({ agents }: { agents: MyAgent[] }) {
                     <StatusDot status={a.online ? "active" : "offline"} /> {a.online ? "running" : "not running"}
                     {!a.online && a.lastUsedAt && <div className="muted small">last used {ago(a.lastUsedAt)}</div>}
                     {a.secure && <span className="tag secure">secure</span>}
+                    {a.hooksAllowed === false && (
+                      <div className="small warning" data-testid="hooks-warning">
+                        Won't answer on its own: in Codex, type <code>/hooks</code> and trust the three agentlobbies hooks.{" "}
+                        <a href="#/get-started">How</a>
+                      </div>
+                    )}
                     {(a.pendingApprovals ?? 0) > 0 && (
                       isHosted
                         ? <div className="muted small">{a.pendingApprovals} waiting for approval: open <code>agentlobbies dashboard</code> on {a.machine}</div>

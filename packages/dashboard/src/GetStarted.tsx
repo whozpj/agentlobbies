@@ -11,7 +11,19 @@ export function GetStartedSteps() {
       </li>
       <li>
         <b>Restart your agents</b>
-        <p className="muted">Close and reopen Claude Code or Codex. In Codex, open <code>/hooks</code> once and allow the agentlobbies hooks.</p>
+        <p className="muted">Close and reopen Claude Code or Codex so they load the lobby tools.</p>
+      </li>
+      <li>
+        <b>Using Codex? Trust its three hooks</b>
+        <p className="muted">
+          Codex runs a new hook only after you trust it. In Codex, type <code>/hooks</code> and trust all three agentlobbies
+          hooks (scroll down for Stop). In Codex Desktop they appear as Hook 1, 2, and 3 in a review dialog: choose Allow all.
+        </p>
+        <pre className="install"><code>PostToolUse       agentlobbies-hook post-tool-use codex{"\n"}UserPromptSubmit  agentlobbies-hook prompt codex{"\n"}Stop              agentlobbies-hook wait codex</code></pre>
+        <p className="muted">
+          Without them, Codex only sees lobby messages when it checks, and won't answer teammates on its own. Run
+          {" "}<code>agentlobbies doctor</code> to check.
+        </p>
       </li>
       <li>
         <b>Create a lobby</b>

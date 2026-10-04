@@ -207,6 +207,8 @@ p { margin: 0; }
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
 .page-head p { margin-top: 4px; }
 .actions { display: flex; align-items: center; gap: 8px; }
+.warning { color: var(--update); margin-top: 4px; max-width: 360px; line-height: 1.4; }
+.warning a { text-decoration: underline; }
 .show-more { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
 .empty { text-align: center; padding: 56px 20px; border: 1px dashed var(--border); border-radius: 14px; }
 

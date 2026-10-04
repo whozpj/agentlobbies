@@ -15,7 +15,7 @@ async function send(ws: TestSocket, seat: Seat, to: Recipient, epoch = 1) {
   });
   const reqId = ulid();
   ws.send({ t: "send", reqId, envelope });
-  const answer = await ws.next("ok" as const, (f) => f.reqId === reqId).catch(() => ws.next("err", (f) => f.reqId === reqId));
+  const answer = await ws.reply(reqId);
   return { envelope, answer };
 }
 

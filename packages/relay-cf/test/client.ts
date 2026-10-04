@@ -201,6 +201,17 @@ export class TestSocket {
     throw new Error(`no ${t} frame; got ${JSON.stringify(this.frames.map((f) => f.t))}`);
   }
 
+  /** The relay's answer to request `reqId`, ok or err, whichever it is. */
+  async reply(reqId: string): Promise<Extract<ServerFrame, { t: "ok" | "err" }>> {
+    const find = () => this.frames.find((f): f is Extract<ServerFrame, { t: "ok" | "err" }> => (f.t === "ok" || f.t === "err") && f.reqId === reqId);
+    for (const deadline = Date.now() + 2000; Date.now() < deadline; ) {
+      const found = find();
+      if (found) return found;
+      await new Promise<void>((resolve) => { this.waiters.push(resolve); setTimeout(resolve, 50); });
+    }
+    throw new Error(`no reply to ${reqId}; got ${JSON.stringify(this.frames.map((f) => f.t))}`);
+  }
+
   async closed(): Promise<number> {
     for (const deadline = Date.now() + 2000; Date.now() < deadline && this.closeCode === undefined; ) {
       await new Promise<void>((resolve) => { this.waiters.push(resolve); setTimeout(resolve, 50); });

@@ -12,7 +12,7 @@ type Keys = Extract<ServerFrame, { t: "keys" }>;
 function put(ws: TestSocket, epoch: number, create: boolean, machineIds: string[]) {
   const reqId = ulid();
   ws.send({ t: "keys.put", reqId, epoch, create, sealed: machineIds.map((machineId) => ({ machineId, sealed: `c2VhbGVk${machineId.slice(-4)}` })) });
-  return ws.next("ok" as const, (f) => f.reqId === reqId).catch(() => ws.next("err", (f) => f.reqId === reqId));
+  return ws.reply(reqId);
 }
 
 /** The newest keys frame matching `predicate`. */

@@ -161,6 +161,18 @@ describe("agentlobbies CLI", () => {
     expect(JSON.parse(readFileSync(join(userHome, ".claude.json"), "utf8")).mcpServers.agentlobbies).toBeUndefined();
   });
 
+  it("tells a Codex user to trust its three hooks, after install and in doctor", async () => {
+    const userHome = mkdtempSync(join(tmpdir(), "user-"));
+    mkdirSync(join(userHome, ".codex"));
+    const run = (...args: string[]) => cliWith({ HOME: userHome }, userHome, ...args);
+
+    for (const out of [(await run("install")).out, (await run("doctor")).out]) {
+      expect(out).toContain("trust its three agentlobbies hooks");
+      for (const hook of ["PostToolUse", "UserPromptSubmit", "Stop"]) expect(out).toContain(hook);
+      expect(out).toContain("won't answer teammates on its own");
+    }
+  });
+
   it("explains what to do when no supported agent is installed", async () => {
     const userHome = mkdtempSync(join(tmpdir(), "user-"));
     const r = await cliWith({ HOME: userHome }, userHome, "install");

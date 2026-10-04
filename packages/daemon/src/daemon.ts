@@ -1190,6 +1190,8 @@ export class Daemon extends EventEmitter {
       cwd: a.cwd,
       online: this.isRunning(a.seat_key),
       lastUsedAt: a.last_seen_at, // when its session last started
+      // Codex agents only answer on their own once the user trusts the hooks (in /hooks).
+      hooksAllowed: a.client === "codex" ? this.db.setting("codex_hooks_ran") === "1" : undefined,
       secure: a.secure === 1,
       pendingApprovals: this.pendingCount(a.seat_key, pendingBySeat),
       lobbies: this.db.seatsFor(a.seat_key).map((s) => ({ lobbyId: s.lobby_id, name: s.lobby_name, handle: s.handle, agentId: s.agent_id })),

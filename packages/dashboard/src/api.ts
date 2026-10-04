@@ -35,6 +35,7 @@ export interface MyAgent {
   cwd: string;
   online: boolean;
   lastUsedAt?: number;
+  hooksAllowed?: boolean; // Codex only
   secure?: boolean;
   pendingApprovals?: number;
   machineId?: string;
