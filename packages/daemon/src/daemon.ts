@@ -154,7 +154,10 @@ export class Daemon extends EventEmitter {
 
 
   private readonly methods: Record<string, (p: Params) => Promise<unknown>> = {
-    "daemon.info": async () => ({ version: CLIENT_VERSION, pid: process.pid, seats: this.db.activeSeats().length }),
+    "daemon.info": async () => ({
+      version: CLIENT_VERSION, pid: process.pid, seats: this.db.activeSeats().length,
+      codexHooksAllowed: this.db.setting("codex_hooks_ran") === "1",
+    }),
 
     "account.login": async (p) => {
       const keys = await generateSeatKeys();
@@ -222,6 +225,8 @@ export class Daemon extends EventEmitter {
       const seatKey = seatKeyFor(client, cwd);
       const passive = p.passive === true;
       this.sessions.set(sessionId, { client, cwd, seatKey, passive });
+      // Codex runs a hook only once the user has allowed it (in /hooks), so one connecting proves they did.
+      if (passive && client === "codex") this.db.setSetting("codex_hooks_ran", "1");
       if (seatKey !== PERSON && !passive) {
         this.db.upsertLocalAgent(seatKey, client, realpathSync(cwd));
         this.connectAgent(seatKey);
@@ -293,7 +298,9 @@ export class Daemon extends EventEmitter {
       );
       const seat = this.addSeat(local.seat_key, { lobbyId, lobbyName: you.lobby_name, agentId: res.agentId, handle: res.handle, role: "member", token: res.token }, keys.secretKey);
       this.db.addNotice(seat.seat_id,
-        `You were added to lobby ${you.lobby_name ?? lobbyId.slice(0, 8)} by @${account.login} as ${res.handle}. Call lobby_players to see who's here.`);
+        `You were added to lobby ${you.lobby_name ?? lobbyId.slice(0, 8)} by @${account.login} as ${res.handle}. ` +
+        `Tell your user, in one short line, that you joined ${you.lobby_name ?? "the lobby"} as ${res.handle}. ` +
+        "Don't post anything to the lobby about it; call lobby_players when you need to know who's here.");
       this.wakeWaiter(seat.seat_id);
       this.emit("activity", { type: "agents" });
       return { agentId: res.agentId, handle: res.handle };

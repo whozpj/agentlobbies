@@ -233,6 +233,7 @@ const doctor = defineCommand({
       }
     };
 
+    let codexHooksAllowed = false;
     const [major = 0, minor = 0] = process.versions.node.split(".").map(Number);
     check(major > 22 || (major === 22 && minor >= 13), `Node ${process.versions.node}`, `Node ${process.versions.node} is too old; install Node 22.13 or later`);
 
@@ -243,6 +244,7 @@ const doctor = defineCommand({
       session.close();
       check(true, `Daemon running (pid ${info.pid})`, "");
       check(Boolean(account), `Signed in as @${account?.login}`, "Not signed in; run `agentlobbies login`");
+      codexHooksAllowed = info.codexHooksAllowed === true;
     } catch (e) {
       check(false, "", `Daemon not running: ${(e as Error).message}`);
     }
@@ -259,6 +261,10 @@ const doctor = defineCommand({
 
     for (const client of detectClients(homedir())) {
       check(client.isInstalled(homedir()), `${client.name} configured`, `${client.name} not configured or out of date; run \`agentlobbies install\``);
+      // Not a failure: Codex works without them, it just doesn't get messages on its own.
+      if (client.id === "codex" && !codexHooksAllowed) {
+        console.log(`${pc.yellow("!")} Codex hooks not allowed yet: open /hooks in Codex and allow the agentlobbies hooks`);
+      }
     }
     process.exitCode = failed ? 1 : 0;
   },

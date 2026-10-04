@@ -39,6 +39,8 @@ const SCHEMA = `
     created_at INTEGER NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
   CREATE TABLE IF NOT EXISTS account (
     id         INTEGER PRIMARY KEY CHECK (id = 1),
     user_id    TEXT NOT NULL,
@@ -317,6 +319,14 @@ export class Db {
 
   finishOutbox(reqId: string, state: "done" | "failed"): void {
     this.db.prepare("UPDATE outbox SET state = ? WHERE req_id = ?").run(state, reqId);
+  }
+
+  setting(key: string): string | undefined {
+    return (this.db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined)?.value;
+  }
+
+  setSetting(key: string, value: string): void {
+    this.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, value);
   }
 
   account(): Account | undefined {

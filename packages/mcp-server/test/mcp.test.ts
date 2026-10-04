@@ -25,9 +25,9 @@ async function startDaemon() {
 }
 
 /** An agent's view: an MCP client connected to our server for one client in one folder. */
-async function agent(daemon: Daemon, client: string) {
+async function agent(daemon: Daemon, client: string, options: Parameters<typeof createServer>[1] = {}) {
   const { sessionId, seatKey } = await daemon.call("session.open", { client, cwd: mkdtempSync(join(tmpdir(), `${client}-`)) });
-  const server = createServer((method, params) => daemon.call(method, { sessionId, ...params }));
+  const server = createServer((method, params) => daemon.call(method, { sessionId, ...params }), options);
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
   await server.connect(serverSide);
   const mcp = new Client({ name: "test-agent", version: "1.0.0" });
@@ -68,6 +68,8 @@ describe("MCP server", () => {
     await web.addTo(lobbyId, "web-claude", ["web"]);
     const r = await web.tool("lobby_status");
     expect(r.text).toContain("[lobby notice] You were added to lobby food-app by @tester as web-claude");
+    expect(r.text).toContain("Tell your user, in one short line, that you joined food-app as web-claude");
+    expect(r.text).toContain("Don't post anything to the lobby about it");
   });
 
   it("explains how to get into a lobby when the agent is not in one", async () => {
@@ -113,5 +115,18 @@ describe("MCP server", () => {
     const seen = await eventually(() => api.tool("lobby_status"), "truncated");
     expect(seen.text).toMatch(/truncated, \d+ KB more: lobby_inbox messageId=\w{26}/);
     expect(seen.text).not.toContain("x".repeat(3000));
+  });
+
+  it("asks a Codex agent, once, to tell its user to allow the hooks until they've run", async () => {
+    const daemon = await startDaemon();
+    expect((await daemon.call("daemon.info", {})).codexHooksAllowed).toBe(false);
+    const api = await agent(daemon, "codex", { askToAllowHooks: true });
+    expect(api.mcp.getInstructions()).toContain("open /hooks in Codex");
+    expect((await api.tool("lobby_status")).text).toContain("open /hooks in Codex");
+    expect((await api.tool("lobby_status")).text).not.toContain("open /hooks in Codex");
+
+    // A Codex hook connecting means the user allowed them.
+    await daemon.call("session.open", { client: "codex", cwd: tmpdir(), passive: true });
+    expect((await daemon.call("daemon.info", {})).codexHooksAllowed).toBe(true);
   });
 });
