@@ -108,14 +108,16 @@ describe("agentlobbies-hook", () => {
     expect(r.stderr).toContain("are you there?");
   });
 
-  it("lets a Codex turn finish normally and preserves queued messages for its runtime listener", async () => {
-    const waiting = runHook("wait", { cwd: apiDir }, "codex");
-    await new Promise((r) => setTimeout(r, 500));
+  it("lets a Codex turn finish normally and keeps new messages for when the chat is woken", async () => {
+    expect(await runHook("wait", { cwd: apiDir }, "codex")).toEqual({ code: 0, stdout: "", stderr: "" });
     await web.call("message.send", { to: "api", type: "question", body: "hello codex" });
-    const r = await waiting;
-    expect(r).toEqual({ code: 0, stdout: "", stderr: "" });
-    const messages = await api.call("inbox.pull", { limit: 25 });
-    expect(messages.some((m: { body: string }) => m.body === "hello codex")).toBe(true);
+    // Delivery to the agent's inbox comes through the relay, so wait for it rather than read at once.
+    let messages: { body: string }[] = [];
+    for (let i = 0; i < 50 && !messages.some((m) => m.body === "hello codex"); i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      messages = messages.concat(await api.call("inbox.pull", { limit: 25 }));
+    }
+    expect(messages.some((m) => m.body === "hello codex")).toBe(true);
   });
 
   it("doesn't wait in a `codex exec` run, which has to finish", async () => {
