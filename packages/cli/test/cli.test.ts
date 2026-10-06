@@ -167,9 +167,9 @@ describe("agentlobbies CLI", () => {
     const run = (...args: string[]) => cliWith({ HOME: userHome }, userHome, ...args);
 
     for (const out of [(await run("install")).out, (await run("doctor")).out]) {
-      expect(out).toContain("trust its three agentlobbies hooks");
+      expect(out).toContain("trust and turn on its three agentlobbies hooks");
       for (const hook of ["PostToolUse", "UserPromptSubmit", "Stop"]) expect(out).toContain(hook);
-      expect(out).toContain("won't answer teammates on its own");
+      expect(out).toContain("can't answer teammates on its own");
     }
   });
 

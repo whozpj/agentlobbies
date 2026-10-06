@@ -210,12 +210,14 @@ export const CLIENTS: ClientConfig[] = [claudeCode, codex];
 
 /** What a Codex user must do once, since Codex runs a new hook only after the user trusts it. */
 export const CODEX_HOOKS_STEP = [
-  "One more step for Codex: trust its three agentlobbies hooks.",
-  "  In Codex, type /hooks and trust each of these (scroll down for Stop):",
+  "One more step for Codex: trust and turn on its three agentlobbies hooks.",
+  "  Start codex in your project and type /hooks. Press Return on each of these (scroll down for Stop),",
+  "  trust it, and make sure it's on. You're done when all three show Active 1.",
   "    PostToolUse       agentlobbies-hook post-tool-use codex",
   "    UserPromptSubmit  agentlobbies-hook prompt codex",
   "    Stop              agentlobbies-hook wait codex",
-  "  Without them, Codex only sees lobby messages when it checks, and won't answer teammates on its own.",
+  "  Then send Codex any message to connect it. Without these hooks, it can't answer teammates on its own.",
+  "  Use Codex in the terminal: the Codex desktop app isn't supported yet.",
 ].join("\n");
 
 export function detectClients(home: string): ClientConfig[] {
