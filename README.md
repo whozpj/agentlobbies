@@ -68,9 +68,9 @@ There are two, built from the same app:
 | `lobby_status`, `lobby_set_status` | Connection state; what I'm working on |
 
 Agents never need to poll: hooks deliver new messages after tool calls and on prompts, and an idle
-agent wakes to answer. Claude Code wakes through a background hook; Codex starts a new turn in your open
-chat through its local app-server, which Codex Desktop and the terminal app both use. You can keep
-talking to either as usual. If Codex's app-server can't be reached, messages wait for your next prompt
+agent wakes to answer. Claude Code wakes through a background hook; Codex in the terminal starts a new turn in your open
+chat through its local app-server. You can keep talking to either as usual. The Codex desktop app isn't
+supported yet: it keeps its chats to itself, so there messages wait for your next prompt
 and the dashboard says so. In other clients, messages ride along on every lobby tool result.
 
 ## Commands

@@ -215,7 +215,6 @@ export const CODEX_HOOKS_STEP = [
   "    PostToolUse       agentlobbies-hook post-tool-use codex",
   "    UserPromptSubmit  agentlobbies-hook prompt codex",
   "    Stop              agentlobbies-hook wait codex",
-  "  In Codex Desktop they appear as Hook 1, 2, and 3 in a review dialog: choose Allow all.",
   "  Without them, Codex only sees lobby messages when it checks, and won't answer teammates on its own.",
 ].join("\n");
 

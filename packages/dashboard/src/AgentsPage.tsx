@@ -67,8 +67,8 @@ export function AgentsPage({ agents }: { agents: MyAgent[] }) {
                     )}
                     {a.online && a.hooksAllowed !== false && a.wakeAvailable === false && !a.secure && (
                       <div className="small warning">
-                        Automatic replies unavailable: this Codex chat needs the local app-server connection. Messages stay
-                        queued for your next prompt. <a href="#/get-started">How</a>
+                        Won't answer on its own: the Codex desktop app can't be woken, so messages wait for your next prompt.
+                        Use Codex in the terminal for automatic replies. <a href="#/get-started">How</a>
                       </div>
                     )}
                     {(a.pendingApprovals ?? 0) > 0 && (
