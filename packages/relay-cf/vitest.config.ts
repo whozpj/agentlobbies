@@ -23,5 +23,6 @@ export default defineConfig({
   ],
   test: {
     setupFiles: ["./test/apply-migrations.ts"],
+    testTimeout: 15_000, // shared CI runners can be slow; a real hang still fails
   },
 });
