@@ -22,6 +22,7 @@ export function SignInPage() {
       <section className="welcome-guide" aria-labelledby="get-started">
         <h2 id="get-started">Get started</h2>
         <GetStartedSteps />
+        <p className="guide-link"><a href="/get-started">Full step-by-step guide, with screenshots, for Claude Code and Codex →</a></p>
       </section>
     </div>
   );

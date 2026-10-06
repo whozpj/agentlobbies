@@ -169,7 +169,7 @@ export class Daemon extends EventEmitter {
       const box = await generateBoxKeys();
       const res = await this.relay<{ token: string; machineId: string; user: { userId: string; login: string; avatarUrl: string } }>(
         "/v1/auth/github", {
-          githubToken: String(p.githubToken ?? ""), machinePublicKey: toB64u(keys.publicKey), boxPublicKey: toB64u(box.publicKey), machineName: hostname(),
+          githubToken: String(p.githubToken ?? ""), machinePublicKey: toB64u(keys.publicKey), boxPublicKey: toB64u(box.publicKey), machineName: process.env.AGENTLOBBIES_MACHINE_NAME ?? hostname(),
         },
       );
       saveKey(this.opts.home, "machine", keys.secretKey);

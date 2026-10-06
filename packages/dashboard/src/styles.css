@@ -403,3 +403,31 @@ p { margin: 0; }
   .user { padding: 4px; }
   .stage-head .actions { margin-left: 0; }
 }
+
+/* The get started guide */
+
+.guide { max-width: 860px; }
+.guide-part { margin: 36px 0; }
+.guide-part > h2 { font-size: 20px; text-transform: none; letter-spacing: 0; color: var(--text); margin-bottom: 10px; }
+.guide-part p, .guide-part li, .guide-part dd { line-height: 1.6; }
+.guide-part ul { padding-left: 20px; display: grid; gap: 6px; }
+.guide a, .guide-link a { text-decoration: underline; }
+.guide-link { text-align: center; margin-top: 14px; }
+.guide-step { margin: 22px 0; }
+.guide-step h3 { display: flex; align-items: center; gap: 10px; font-size: 15px; margin-bottom: 6px; }
+.step-n { width: 24px; height: 24px; display: inline-grid; place-items: center; border-radius: 50%; background: var(--accent); color: var(--accent-ink); font-size: 12px; font-weight: 600; flex: none; }
+.shot { margin: 12px 0 18px; }
+.shot img { display: block; max-width: 100%; height: auto; border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); }
+.shot figcaption { margin-top: 6px; }
+.terminal { margin: 12px 0 18px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: #0b0d12; }
+.terminal-bar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; background: #151922; border-bottom: 1px solid #242a35; }
+.terminal-bar span { width: 10px; height: 10px; border-radius: 50%; background: #3a4150; }
+.terminal-bar b { margin-left: 8px; font-weight: 500; font-size: 12px; color: #8b93a3; }
+.terminal pre { margin: 0; padding: 12px 14px; color: #c9cfda; font: 13px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.terminal .typed { color: #ffffff; }
+.client-tabs { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; margin: 14px 0 4px; }
+.client-tabs button { padding: 10px 12px; text-align: left; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 10px; cursor: pointer; font: inherit; }
+.client-tabs button[aria-selected="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.client-steps { padding: 4px 0; }
+.faq dt { font-weight: 600; margin-top: 16px; }
+.faq dd { margin: 4px 0 0; }

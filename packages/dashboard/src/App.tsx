@@ -68,6 +68,8 @@ export function App() {
   // The hosted dashboard's own pages: invite links, and sign-in.
   const invite = location.pathname.match(/^\/invite\/([\w-]+)$/)?.[1];
   if (isHosted && invite) return me === undefined ? null : <InvitePage invite={invite} me={me} />;
+  // The guide is for people who haven't set anything up yet, so it doesn't need a sign-in.
+  if (isHosted && me === null && (location.pathname === "/get-started" || route === "/get-started")) return <GetStartedPage />;
   if (isHosted && me === null) return <SignInPage />;
 
   const lobbyId = route.match(/^\/lobbies\/([0-9a-f]{64})$/)?.[1];

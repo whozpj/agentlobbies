@@ -35,9 +35,10 @@ export function stopDaemon(home: string): Promise<void> {
 /** One computer: its own daemon home, a human at the CLI, and agents over stdio MCP. */
 export class Machine {
   readonly home = mkdtempSync(join("/tmp", "al-e2e-"));
-  private readonly env = { ...process.env, AGENTLOBBIES_HOME: this.home, AGENTLOBBIES_RELAY_URL: relayUrl, AGENTLOBBIES_GITHUB_URL: githubUrl, NO_COLOR: "1" } as Record<string, string>;
+  private readonly env: Record<string, string>;
 
-  constructor() {
+  constructor(extraEnv: Record<string, string> = {}) {
+    this.env = { ...process.env, AGENTLOBBIES_HOME: this.home, AGENTLOBBIES_RELAY_URL: relayUrl, AGENTLOBBIES_GITHUB_URL: githubUrl, NO_COLOR: "1", ...extraEnv } as Record<string, string>;
     machines.push(this);
   }
 
