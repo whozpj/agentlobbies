@@ -99,6 +99,12 @@ describe("agentlobbies-hook", () => {
     late.close();
   });
 
+  it("never waits at session start, which would hold up the user's first message", async () => {
+    const started = Date.now();
+    expect(await runHook("wait", { cwd: webDir, hook_event_name: "SessionStart" })).toEqual({ code: 0, stdout: "", stderr: "" });
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
   it("wait blocks until a message arrives, then wakes the agent with exit code 2", async () => {
     const waiting = runHook("wait", { cwd: webDir });
     await new Promise((r) => setTimeout(r, 500));

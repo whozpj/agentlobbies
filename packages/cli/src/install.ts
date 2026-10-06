@@ -96,17 +96,14 @@ function withoutOurHooks(hooks: Hooks): Hooks {
 }
 
 /**
- * Delivers messages after any tool call and on each prompt, and wakes an idle agent (asyncRewake).
- * Waiting starts when a session opens and again after each turn, so even a session that has
- * never taken a turn can be woken.
+ * Delivers messages after any tool call and on each prompt, and wakes an idle agent (asyncRewake)
+ * after each turn. Not at session start: Claude Code can hold a new session until those hooks finish.
  */
 function claudeHooks(hookCommand: string): Hooks {
-  const wait = { type: "command", command: `${hookCommand} wait`, asyncRewake: true, timeout: 3600 };
   return {
     PostToolUse: [{ hooks: [{ type: "command", command: `${hookCommand} post-tool-use` }] }],
     UserPromptSubmit: [{ hooks: [{ type: "command", command: `${hookCommand} prompt` }] }],
-    SessionStart: [{ hooks: [wait] }],
-    Stop: [{ hooks: [wait] }],
+    Stop: [{ hooks: [{ type: "command", command: `${hookCommand} wait`, asyncRewake: true, timeout: 3600 }] }],
   };
 }
 
@@ -149,7 +146,9 @@ function hooksComplete(path: string, ours: Hooks): boolean {
   const hooks: Hooks = JSON.parse(readText(path) || "{}").hooks ?? {};
   const events = Object.keys(ours);
   const found = events.filter((event) => (hooks[event] ?? []).some(isOurs)).length;
-  return found === 0 || found === events.length;
+  // A hook of ours on an event we no longer use (SessionStart, before 0.6.4) also means out of date.
+  const stale = Object.keys(hooks).some((event) => !events.includes(event) && hooks[event]!.some(isOurs));
+  return !stale && (found === 0 || found === events.length);
 }
 
 const claudeCode: ClientConfig = {

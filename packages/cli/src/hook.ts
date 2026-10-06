@@ -11,6 +11,7 @@ const WAIT_MS = 55 * 60_000; // just under the hook's 1 hour timeout
 
 interface HookInput {
   cwd: string;
+  hook_event_name?: string;
   session_id?: string;
   tool_name?: string;
   transcript_path?: string | null;
@@ -112,6 +113,9 @@ async function main(): Promise<number> {
   }
 
   if (event === "wait") {
+    // Claude Code can hold a new session until its SessionStart hooks finish, so a wait there would
+    // block the user's first message. Installs from before 0.6.4 still have one; it ends at once.
+    if (input.hook_event_name === "SessionStart") return 0;
     const unread = await waitForMessages(client, input.cwd);
     if (!unread) return 0;
   } else if (event === "post-tool-use" && input.tool_name?.startsWith("mcp__agentlobbies__")) {

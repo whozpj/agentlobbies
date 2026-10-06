@@ -86,8 +86,18 @@ describe("Claude Code hooks", () => {
     ]);
     expect(hooks.UserPromptSubmit).toEqual([{ hooks: [{ type: "command", command: "agentlobbies-hook prompt" }] }]);
     expect(hooks.Stop).toEqual([{ hooks: [{ type: "command", command: "agentlobbies-hook wait", asyncRewake: true, timeout: 3600 }] }]);
-    // A session that was just opened has had no turn yet, so it listens from SessionStart.
-    expect(hooks.SessionStart).toEqual([{ hooks: [{ type: "command", command: "agentlobbies-hook wait", asyncRewake: true, timeout: 3600 }] }]);
+    // Nothing at session start: Claude Code can hold a new session until those hooks finish.
+    expect(hooks.SessionStart).toBeUndefined();
+  });
+
+  it("removes the session-start wait an older install added, and counts it as out of date until then", () => {
+    const wait = { type: "command", command: "agentlobbies-hook wait", asyncRewake: true, timeout: 3600 };
+    const old = JSON.stringify({ hooks: { SessionStart: [{ hooks: [wait] }], Stop: [{ hooks: [wait] }] } });
+    const home = homeWith({ ".claude.json": JSON.stringify({ mcpServers: { agentlobbies: { command: "agentlobbies" } } }), ".claude/settings.json": old });
+    expect(claude.isInstalled(home)).toBe(false);
+    claude.install(home, command, "agentlobbies-hook");
+    expect(JSON.parse(read(home, ".claude/settings.json")).hooks.SessionStart).toBeUndefined();
+    expect(claude.isInstalled(home)).toBe(true);
   });
 
   it("counts as installed only with every hook, so doctor asks older installs to update", () => {
@@ -95,9 +105,9 @@ describe("Claude Code hooks", () => {
     claude.install(home, command, "agentlobbies-hook");
     expect(claude.isInstalled(home)).toBe(true);
     const settingsPath = join(home, ".claude", "settings.json");
-    const withoutStart = JSON.parse(readFileSync(settingsPath, "utf8"));
-    delete withoutStart.hooks.SessionStart;
-    writeFileSync(settingsPath, JSON.stringify(withoutStart));
+    const withoutPrompt = JSON.parse(readFileSync(settingsPath, "utf8"));
+    delete withoutPrompt.hooks.UserPromptSubmit;
+    writeFileSync(settingsPath, JSON.stringify(withoutPrompt));
     expect(claude.isInstalled(home)).toBe(false);
   });
 
