@@ -237,10 +237,11 @@ export class Daemon extends EventEmitter {
         this.connectAgent(seatKey);
         this.emit("activity", { type: "agents" });
         if (client === "codex") {
-          const saved = this.db.setting(`codex.binding:${seatKey}`);
-          if (saved) {
-            try { void this.call("codex.attach", { sessionId, ...JSON.parse(saved) }).catch(() => {}); } catch { /* stale local binding */ }
-          }
+          // A new Codex chat in this folder: stop waking the previous one, which may still be loaded but
+          // no longer open. This chat binds itself once its hooks run (its first message).
+          this.codexListeners.get(seatKey)?.close();
+          this.codexListeners.delete(seatKey);
+          this.codexReady.delete(seatKey);
         }
       }
       const seat = this.db.activeSeat(seatKey);
@@ -290,7 +291,6 @@ export class Daemon extends EventEmitter {
       }
       try {
         await listener.attach();
-        this.db.setSetting(`codex.binding:${session.seatKey}`, JSON.stringify({ threadId: binding.threadId, socketPath: binding.socketPath }));
         listener.wake();
         return { available: true };
       } catch {

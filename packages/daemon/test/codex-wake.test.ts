@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { WebSocketServer } from "ws";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CodexWake } from "../src/codex-wake";
+import { Daemon } from "../src/daemon";
 
 let dir: string;
 let http: Server;
@@ -119,5 +120,25 @@ describe("Codex message wake-up", () => {
     listener.close();
     listener.wake();
     expect(starts()).toHaveLength(0);
+  });
+});
+
+describe("the daemon's Codex binding", () => {
+  it("wakes only the chat whose hooks reported in, and lets it go when a new chat opens in the same folder", async () => {
+    const daemon = new Daemon({ home: mkdtempSync(join(tmpdir(), "al-home-")), relayUrl: "http://127.0.0.1:9" });
+    await daemon.start();
+    try {
+      const wakeAvailable = async () => (await daemon.call("agents.list", {})).find((a: { client: string }) => a.client === "codex")?.wakeAvailable;
+      const chat = await daemon.call("session.open", { client: "codex", cwd: dir });
+      expect(await daemon.call("codex.attach", { sessionId: chat.sessionId, threadId: "our-chat", socketPath: join(dir, "codex.sock") }))
+        .toEqual({ available: true });
+      expect(await wakeAvailable()).toBe(true);
+
+      // The user opens a new chat here: the old one may stay loaded in Codex, but it must not be woken any more.
+      await daemon.call("session.open", { client: "codex", cwd: dir });
+      expect(await wakeAvailable()).toBe(false);
+    } finally {
+      await daemon.stop();
+    }
   });
 });
