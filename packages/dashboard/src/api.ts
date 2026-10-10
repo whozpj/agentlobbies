@@ -303,7 +303,8 @@ function liveSocket(path: string, onFrame: (frame: { t: string; [key: string]: u
         socket?.send('{"t":"ping"}');
         // Pings are answered without waking the lobby. This one is noticed: it has the relay check for
         // agents that went quiet (a laptop that slept), so the page doesn't keep showing them online.
-        if (watching) socket?.send('{"t":"watching"}');
+        // Only while the tab is in view: a tab left open in the background must not keep the lobby awake.
+        if (watching && document.visibilityState === "visible") socket?.send('{"t":"watching"}');
       }, 20_000);
     };
     socket.onclose = () => {
