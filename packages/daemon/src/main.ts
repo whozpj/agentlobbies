@@ -42,8 +42,20 @@ const server = new RpcServer(
 daemon.on("notify", ({ method, params }) => server.notifyAll(method, params));
 await server.listen(path);
 
+// The socket file is ours until the home folder is deleted or another daemon takes the path over.
+const ownSocket = process.platform === "win32" ? undefined : statSync(path).ino;
+function ownsSocket(): boolean {
+  if (ownSocket === undefined) return true;
+  try {
+    return statSync(path).ino === ownSocket;
+  } catch {
+    return false;
+  }
+}
+
 async function shutdown() {
-  await server.close();
+  // Closing the server removes the socket file, which must stay if it's another daemon's by now.
+  if (ownsSocket()) await server.close();
   await daemon.stop();
   process.exit(0);
 }
@@ -51,19 +63,9 @@ daemon.on("shutdown", shutdown);
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
 
-// A daemon nobody can reach must not keep running, signed in, in the background. Exit if the socket
-// is no longer ours (the home folder was deleted, or another daemon took over) or the package was removed.
-if (process.platform !== "win32") {
-  const ownSocket = statSync(path).ino;
-  const script = fileURLToPath(import.meta.url);
-  const stillOurs = () => {
-    try {
-      return statSync(path).ino === ownSocket && existsSync(script);
-    } catch {
-      return false;
-    }
-  };
-  setInterval(() => {
-    if (!stillOurs()) void shutdown();
-  }, Number(process.env.AGENTLOBBIES_ORPHAN_CHECK_MS ?? 30_000)).unref();
-}
+// A daemon nobody can reach must not keep running, signed in, in the background: exit once the
+// socket isn't ours any more, or the package was uninstalled.
+const script = fileURLToPath(import.meta.url);
+setInterval(() => {
+  if (!ownsSocket() || !existsSync(script)) void shutdown();
+}, Number(process.env.AGENTLOBBIES_ORPHAN_CHECK_MS ?? 30_000)).unref();
