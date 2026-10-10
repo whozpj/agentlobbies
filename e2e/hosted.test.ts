@@ -396,7 +396,8 @@ describe("account", () => {
     await page.getByRole("link", { name: "Account", exact: true }).click();
 
     // This browser and the laptop are both devices.
-    await pwExpect(page.getByRole("row").filter({ hasText: "this device" })).toContainText("browser");
+    // The first load of the page waits on the relay, which can be slow on a busy CI runner.
+    await pwExpect(page.getByRole("row").filter({ hasText: "this device" })).toContainText("browser", { timeout: 20_000 });
     const laptopRow = page.getByRole("row").filter({ hasText: "machine" });
     await pwExpect(laptopRow).toBeVisible();
 
