@@ -1,5 +1,6 @@
 // Importable by MCP servers and the CLI without loading node:sqlite (G40).
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { defaultHome, socketPath } from "./paths";
 import { DaemonError, RpcClient } from "./rpc";
@@ -90,11 +91,13 @@ export async function openSession(opts: { client: string; cwd: string; home?: st
   let sessionId: string;
   let closed = false;
   let reconnecting: Promise<void> | undefined;
+  // The same for every reconnect, so a restarted daemon can tell this running agent from a new one.
+  const instance = randomUUID();
 
   /** Swaps in a new connection and session together, so no call ever pairs one with the other's. */
   async function connect() {
     const client = await connectToDaemon(opts.home);
-    const opened = await client.call("session.open", { client: opts.client, cwd: opts.cwd, passive: opts.passive ?? false });
+    const opened = await client.call("session.open", { client: opts.client, cwd: opts.cwd, passive: opts.passive ?? false, instance });
     const previous = daemon;
     daemon = client;
     sessionId = opened.sessionId;

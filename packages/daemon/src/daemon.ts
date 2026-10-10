@@ -101,6 +101,8 @@ export function seatKeyFor(client: string, cwd: string): string {
 export class Daemon extends EventEmitter {
   private readonly codexListeners = new Map<string, CodexWake>();
   private readonly codexReady = new Set<string>();
+  /** Which running Codex chat (its MCP server's instance id) each seat belongs to. */
+  private readonly codexChats = new Map<string, string>();
   private db!: Db;
   private running = false;
   private readonly sessions = new Map<string, Session>();
@@ -237,13 +239,7 @@ export class Daemon extends EventEmitter {
         this.db.upsertLocalAgent(seatKey, client, realpathSync(cwd));
         this.connectAgent(seatKey);
         this.emit("activity", { type: "agents" });
-        if (client === "codex") {
-          // A new Codex chat in this folder: stop waking the previous one, which may still be loaded but
-          // no longer open. This chat binds itself once its hooks run (its first message).
-          this.codexListeners.get(seatKey)?.close();
-          this.codexListeners.delete(seatKey);
-          this.codexReady.delete(seatKey);
-        }
+        if (client === "codex") this.codexChatOpened(seatKey, String(p.instance ?? sessionId));
       }
       const seat = this.db.activeSeat(seatKey);
       return { sessionId, seatKey, lobby: seat ? { lobbyId: seat.lobby_id, handle: seat.handle } : null };
@@ -271,25 +267,8 @@ export class Daemon extends EventEmitter {
       if (!binding.threadId || !binding.socketPath.startsWith("/") || binding.socketPath.includes(":")) {
         throw new DaemonError("bad_request", "Codex needs a thread id and a local Unix socket");
       }
-      let listener = this.codexListeners.get(session.seatKey);
-      if (listener && (listener.binding.threadId !== binding.threadId || listener.binding.socketPath !== binding.socketPath)) {
-        listener.close();
-        this.codexListeners.delete(session.seatKey);
-        listener = undefined;
-      }
-      if (!listener) {
-        listener = new CodexWake(binding, () => {
-          if (!this.running || !this.isRunning(session.seatKey) || this.isSecure(session.seatKey)) return undefined;
-          const seat = this.db.activeSeat(session.seatKey);
-          return seat ? this.db.unreadRevision(seat.seat_id) : undefined;
-        }, (ready) => {
-          if (!this.running) return;
-          if (ready) this.codexReady.add(session.seatKey);
-          else this.codexReady.delete(session.seatKey);
-          this.emit("activity", { type: "agents" });
-        });
-        this.codexListeners.set(session.seatKey, listener);
-      }
+      this.db.setSetting(`codex.binding:${session.seatKey}`, JSON.stringify({ ...binding, instance: this.codexChats.get(session.seatKey) }));
+      const listener = this.bindCodex(session.seatKey, binding);
       try {
         await listener.attach();
         listener.wake();
@@ -626,6 +605,44 @@ export class Daemon extends EventEmitter {
   private othersFor(seat: Seat, includeSelf: boolean): AgentProfile[] {
     return this.db.roster(seat.seat_id).filter((a) =>
       (includeSelf || a.agentId !== seat.agent_id) && (seat.seat_key === PERSON || a.client !== "cli"));
+  }
+
+  /**
+   * A Codex chat's MCP server connected. The same one reconnecting (the daemon restarted, as in an
+   * upgrade) keeps its chat. A different one is a new chat in this folder: stop waking the previous
+   * chat, which may still be loaded but no longer open; the new one binds once its hooks run.
+   */
+  private codexChatOpened(seatKey: string, instance: string): void {
+    if (this.codexChats.get(seatKey) === instance) return;
+    this.codexChats.set(seatKey, instance);
+    this.codexListeners.get(seatKey)?.close();
+    this.codexListeners.delete(seatKey);
+    this.codexReady.delete(seatKey);
+
+    const key = `codex.binding:${seatKey}`;
+    const saved = JSON.parse(this.db.setting(key) ?? "null") as (CodexBinding & { instance?: string }) | null;
+    if (saved?.instance !== instance) return this.db.setSetting(key, "null");
+    const listener = this.bindCodex(seatKey, saved);
+    void listener.attach().then(() => listener.wake()).catch(() => this.codexReady.delete(seatKey));
+  }
+
+  /** The listener that wakes a seat's Codex chat, replaced if the chat changed. */
+  private bindCodex(seatKey: string, binding: CodexBinding): CodexWake {
+    let listener = this.codexListeners.get(seatKey);
+    if (listener && listener.binding.threadId === binding.threadId && listener.binding.socketPath === binding.socketPath) return listener;
+    listener?.close();
+    listener = new CodexWake(binding, () => {
+      if (!this.running || !this.isRunning(seatKey) || this.isSecure(seatKey)) return undefined;
+      const seat = this.db.activeSeat(seatKey);
+      return seat ? this.db.unreadRevision(seat.seat_id) : undefined;
+    }, (ready) => {
+      if (!this.running) return;
+      if (ready) this.codexReady.add(seatKey);
+      else this.codexReady.delete(seatKey);
+      this.emit("activity", { type: "agents" });
+    });
+    this.codexListeners.set(seatKey, listener);
+    return listener;
   }
 
   /** "all", "#topic", "owner:<area>", or a handle (LLD 7.7). */

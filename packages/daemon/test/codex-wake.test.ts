@@ -124,19 +124,41 @@ describe("Codex message wake-up", () => {
 });
 
 describe("the daemon's Codex binding", () => {
+  const wakeAvailable = async (daemon: Daemon) =>
+    (await daemon.call("agents.list", {})).find((a: { client: string }) => a.client === "codex")?.wakeAvailable;
+  const attach = (daemon: Daemon, sessionId: string) =>
+    daemon.call("codex.attach", { sessionId, threadId: "our-chat", socketPath: join(dir, "codex.sock") });
+
   it("wakes only the chat whose hooks reported in, and lets it go when a new chat opens in the same folder", async () => {
     const daemon = new Daemon({ home: mkdtempSync(join(tmpdir(), "al-home-")), relayUrl: "http://127.0.0.1:9" });
     await daemon.start();
     try {
-      const wakeAvailable = async () => (await daemon.call("agents.list", {})).find((a: { client: string }) => a.client === "codex")?.wakeAvailable;
-      const chat = await daemon.call("session.open", { client: "codex", cwd: dir });
-      expect(await daemon.call("codex.attach", { sessionId: chat.sessionId, threadId: "our-chat", socketPath: join(dir, "codex.sock") }))
-        .toEqual({ available: true });
-      expect(await wakeAvailable()).toBe(true);
+      const chat = await daemon.call("session.open", { client: "codex", cwd: dir, instance: "first-chat" });
+      expect(await attach(daemon, chat.sessionId)).toEqual({ available: true });
+      expect(await wakeAvailable(daemon)).toBe(true);
 
       // The user opens a new chat here: the old one may stay loaded in Codex, but it must not be woken any more.
-      await daemon.call("session.open", { client: "codex", cwd: dir });
-      expect(await wakeAvailable()).toBe(false);
+      await daemon.call("session.open", { client: "codex", cwd: dir, instance: "second-chat" });
+      expect(await wakeAvailable(daemon)).toBe(false);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it("keeps waking the same chat after the daemon restarts, as an upgrade does", async () => {
+    const home = mkdtempSync(join(tmpdir(), "al-home-"));
+    let daemon = new Daemon({ home, relayUrl: "http://127.0.0.1:9" });
+    await daemon.start();
+    const chat = await daemon.call("session.open", { client: "codex", cwd: dir, instance: "our-chat-server" });
+    await attach(daemon, chat.sessionId);
+    await daemon.stop();
+
+    daemon = new Daemon({ home, relayUrl: "http://127.0.0.1:9" });
+    await daemon.start();
+    try {
+      // The chat's MCP server reconnects by itself; nobody has typed in Codex since the restart.
+      await daemon.call("session.open", { client: "codex", cwd: dir, instance: "our-chat-server" });
+      await vi.waitFor(async () => expect(await wakeAvailable(daemon)).toBe(true));
     } finally {
       await daemon.stop();
     }
