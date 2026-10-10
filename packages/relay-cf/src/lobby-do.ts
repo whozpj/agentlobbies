@@ -6,7 +6,7 @@ import { DurableObject } from "cloudflare:workers";
 import { headSeq, pageFor } from "./lobby/events";
 import { currentEpoch, keysFrame, markRotate, memberMachines, putKeys, rotateNeeded, type Machine } from "./lobby/keys";
 import {
-  admit, getAgent, initLobby, isActive, personOf, removeFromLobby, roleOf, roster, updateProfile, type AdmitResult, type NewAgent,
+  admit, getAgent, initLobby, isActive, personSeats, removeFromLobby, roleOf, roster, updateProfile, type AdmitResult, type NewAgent,
 } from "./lobby/membership";
 import { getMeta, getSettings, isOpen } from "./lobby/meta";
 import { lobbyExists, migrate } from "./lobby/schema";
@@ -67,10 +67,10 @@ export class LobbyDurableObject extends DurableObject<Env> {
   async admit(agent: NewAgent, role: Role): Promise<AdmitResult> {
     const { sql } = this.ctx.storage;
     // One person per GitHub account: joining from another machine takes over their seat, and its name.
-    const previous = agent.client === "cli" && agent.owner && lobbyExists(sql) && isOpen(sql) ? personOf(sql, agent.owner.userId) : undefined;
-    if (previous) {
-      this.fanOut(removeFromLobby(this.ctx.storage, previous, Date.now()));
-      for (const ws of this.ctx.getWebSockets(previous)) ws.close(4003, "moved to another machine");
+    const previous = agent.client === "cli" && agent.owner && lobbyExists(sql) && isOpen(sql) ? personSeats(sql, agent.owner.userId) : [];
+    for (const agentId of previous) {
+      this.fanOut(removeFromLobby(this.ctx.storage, agentId, Date.now()));
+      for (const ws of this.ctx.getWebSockets(agentId)) ws.close(4003, "moved to another machine");
     }
     const result = admit(this.ctx.storage, agent, role, Date.now());
     if ("joined" in result) this.fanOut(result.joined);

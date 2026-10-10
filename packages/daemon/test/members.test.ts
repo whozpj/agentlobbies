@@ -98,6 +98,28 @@ describe("invites", () => {
 
 
 
+describe("signing out", () => {
+  it("takes this machine's agents out of their lobbies, so nobody still sees them online", async () => {
+    const alice = await startDaemon("alice");
+    const bob = await startDaemon("bob");
+    const web = await agentSession(alice, "claude-code", "web");
+    const api = await agentSession(bob, "codex", "api");
+    const { lobbyId } = await alice.call("lobby.create", { name: "food-app" });
+    await alice.call("lobby.addAgent", { lobbyId, seatKey: web.seatKey });
+    await bob.call("invite.accept", { invite: (await alice.call("invite.create", { lobbyId })).url });
+    await bob.call("lobby.addAgent", { lobbyId, seatKey: api.seatKey });
+    await until(() => web.call("lobby.players"), (p: unknown[]) => p.length === 2);
+
+    await bob.call("account.logout", {});
+    expect(await bob.call("dashboard.lobbies", {})).toEqual([]);
+    const roster = await until(
+      async () => (await alice.call("dashboard.lobbies", {}))[0].roster,
+      (r: { handle: string; owner?: { login: string } }[]) => r.every((a) => a.owner?.login === "alice"),
+    );
+    expect(roster.map((a: { handle: string }) => a.handle).sort()).toEqual(["alice", "web-claude"]);
+  });
+});
+
 describe("one account on two machines", () => {
   it("is one person in the lobby, on whichever machine used it last", async () => {
     const dana = freshUser("dana");

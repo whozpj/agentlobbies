@@ -190,7 +190,7 @@ export class Daemon extends EventEmitter {
       const account = this.db.account();
       if (account) {
         try {
-          await this.relay("/v1/auth/logout", {}, account.token);
+          await this.relay("/v1/auth/logout", {}, await this.accountToken());
         } catch {
           // Signing out on this machine still works when the relay can't be reached.
         }
@@ -215,7 +215,6 @@ export class Daemon extends EventEmitter {
     /** Deletes your account everywhere, then everything this machine kept for it. */
     "account.delete": async () => {
       await this.relay("/v1/me", undefined, await this.accountToken(), "DELETE");
-      for (const seat of this.db.activeSeats()) this.forgetLobby(seat.lobby_id);
       this.signOutLocally();
       return {};
     },
@@ -987,9 +986,11 @@ export class Daemon extends EventEmitter {
     }
   }
 
+  /** Signed out: this machine's agents leave their lobbies and go offline, whether or not the relay heard about it. */
   private signOutLocally(): void {
     this.userLink?.stop();
     this.userLink = undefined;
+    for (const seat of this.db.activeSeats()) this.forgetLobby(seat.lobby_id);
     this.db.clearAccount();
     this.emit("activity", { type: "lobbies" });
   }
@@ -1077,14 +1078,24 @@ export class Daemon extends EventEmitter {
     this.emit("activity", { type: "lobbies" });
     let added = false;
     for (const lobby of lobbies) {
-      if (this.db.activeSeatIn(PERSON, lobby.lobbyId)) continue;
       // Each account has one seat per lobby. If another of your machines has it, leave it there;
       // it moves here when you use the lobby on this machine.
-      if (lobby.roster.some((a) => a.client === "cli" && a.owner?.login === account.login)) continue;
+      const yours = lobby.roster.filter((a) => a.client === "cli" && a.owner?.login === account.login);
+      const here = this.db.activeSeatIn(PERSON, lobby.lobbyId);
+      if (here ? yours.length <= 1 : yours.length > 0) continue;
+      // No seat yet, or several from before there was one per account: joining leaves just this one.
+      if (here) this.retireSeat(here);
       await this.addPersonSeat(lobby.lobbyId, lobby.name);
       added = true;
     }
     if (added) this.emit("activity", { type: "lobbies" });
+  }
+
+  /** Stops using a seat the relay is about to replace. */
+  private retireSeat(seat: Seat): void {
+    this.connections.get(seat.seat_id)?.stop();
+    this.connections.delete(seat.seat_id);
+    this.db.setSeatState(seat.seat_id, "kicked");
   }
 
   /** Puts you in a lobby from this machine. The relay keeps one person per account, so this takes over your seat from any other machine. */
