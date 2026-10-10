@@ -115,6 +115,8 @@ export class Daemon extends EventEmitter {
   private syncing: Promise<void> = Promise.resolve();
   /** Each lobby's people, as the relay lists them (members needn't have a seat on this machine). */
   private readonly people = new Map<string, LobbyPerson[]>();
+  /** The lobbies you're a member of, by the relay's list. */
+  private readonly lobbyNames = new Map<string, string | null>();
   /** Lobbies whose key must change (someone left) before anything more is sent. */
   private readonly rotating = new Set<string>();
   /** How many times each outgoing message was sealed again after a key change. */
@@ -331,7 +333,9 @@ export class Daemon extends EventEmitter {
       const lobbyId = String(p.lobbyId ?? "");
       const local = this.db.localAgent(String(p.seatKey ?? ""));
       if (!local) throw new DaemonError("not_found", "that agent hasn't connected on this machine");
-      const you = this.db.activeSeatIn(PERSON, lobbyId);
+      // Your seat may be on another of your machines; using the lobby here brings it to this one.
+      const you = this.db.activeSeatIn(PERSON, lobbyId)
+        ?? (this.lobbyNames.has(lobbyId) ? await this.addPersonSeat(lobbyId, this.lobbyNames.get(lobbyId) ?? null) : undefined);
       if (!you) throw new DaemonError("not_found", "you aren't in that lobby");
 
       const keys = await generateSeatKeys();
@@ -411,7 +415,7 @@ export class Daemon extends EventEmitter {
       };
     },
 
-    "lobby.players": async (p) => this.db.roster(this.seat(p).seat_id),
+    "lobby.players": async (p) => this.othersFor(this.seat(p), true),
 
     // In secure mode an agent's message waits for its user's approval instead of going out.
     "message.send": async (p) => {
@@ -488,6 +492,7 @@ export class Daemon extends EventEmitter {
 
     "dashboard.lobbies": async () => {
       const byLobby = Map.groupBy(this.db.activeSeats(), (s) => s.lobby_id);
+      const login = this.db.account()?.login;
       return [...byLobby].map(([lobbyId, seats]) => {
         const view = this.viewSeat(seats);
         const connection = this.connections.get(view.seat_id)?.state ?? "stopped";
@@ -497,7 +502,8 @@ export class Daemon extends EventEmitter {
         return {
           lobbyId,
           name: seats.find((s) => s.lobby_name)?.lobby_name ?? null,
-          myRole: seats.find((s) => s.seat_key === PERSON)?.role ?? null,
+          // Your seat may be on another of your machines; you're still the same member here.
+          myRole: seats.find((s) => s.seat_key === PERSON)?.role ?? SEAT_ROLE[this.people.get(lobbyId)?.find((m) => m.login === login)?.role ?? ""] ?? null,
           local: seats.filter((s) => s.seat_key !== PERSON).map((s) => ({ handle: s.handle, agentId: s.agent_id, seatKey: s.seat_key })),
           connection,
           keyEpoch: this.db.latestLobbyKey(lobbyId)?.epoch ?? 0,
@@ -614,21 +620,30 @@ export class Daemon extends EventEmitter {
     });
   }
 
+  /**
+   * Who a seat can see and message. To an agent that's the other agents only: people show who's
+   * around on the dashboard, and aren't someone to ask or wait on.
+   */
+  private othersFor(seat: Seat, includeSelf: boolean): AgentProfile[] {
+    return this.db.roster(seat.seat_id).filter((a) =>
+      (includeSelf || a.agentId !== seat.agent_id) && (seat.seat_key === PERSON || a.client !== "cli"));
+  }
+
   /** "all", "#topic", "owner:<area>", or a handle (LLD 7.7). */
   private resolveTo(seat: Seat, to: string): Recipient {
     if (to === "all") return { kind: "broadcast" };
     if (to.startsWith("#")) return { kind: "topic", topic: to.slice(1) };
 
-    const others = this.db.roster(seat.seat_id).filter((a) => a.agentId !== seat.agent_id);
+    const others = this.othersFor(seat, false);
     const members = others.map((a) => `${a.handle} (${a.owns.join(", ") || "no areas"})`).join("; ");
     if (to.startsWith("owner:")) {
       const area = to.slice("owner:".length);
       const owner = others.filter((a) => a.owns.includes(area)).sort((a, b) => b.lastSeenAt - a.lastSeenAt)[0];
-      if (!owner) throw new DaemonError("no_owner", `no member owns '${area}'. Members: ${members || "none"}`);
+      if (!owner) throw new DaemonError("no_owner", `no agent owns '${area}'. Agents: ${members || "none"}`);
       return { kind: "direct", agentId: owner.agentId };
     }
     const target = others.find((a) => a.handle === to);
-    if (!target) throw new DaemonError("unknown_recipient", `no member named '${to}'. Members: ${members || "none"}`);
+    if (!target) throw new DaemonError("unknown_recipient", `no agent named '${to}'. Agents: ${members || "none"}`);
     return { kind: "direct", agentId: target.agentId };
   }
 
@@ -1050,22 +1065,37 @@ export class Daemon extends EventEmitter {
   private async addMissingPersonSeats(): Promise<void> {
     const account = this.db.account();
     if (!account) return;
-    const lobbies = await this.relay<{ lobbyId: string; name: string | null; people: LobbyPerson[] }[]>("/v1/lobbies", undefined, await this.accountToken(), "GET");
+    const lobbies = await this.relay<{ lobbyId: string; name: string | null; people: LobbyPerson[]; roster: AgentProfile[] }[]>(
+      "/v1/lobbies", undefined, await this.accountToken(), "GET",
+    );
     this.people.clear();
-    for (const lobby of lobbies) this.people.set(lobby.lobbyId, lobby.people);
+    this.lobbyNames.clear();
+    for (const lobby of lobbies) {
+      this.people.set(lobby.lobbyId, lobby.people);
+      this.lobbyNames.set(lobby.lobbyId, lobby.name);
+    }
     this.emit("activity", { type: "lobbies" });
     let added = false;
     for (const lobby of lobbies) {
       if (this.db.activeSeatIn(PERSON, lobby.lobbyId)) continue;
-      const keys = await generateSeatKeys();
-      const person = { handle: personHandle(account.login), client: "cli" as const, owns: [], workingOn: "", publicKey: toB64u(keys.publicKey) };
-      const res = await this.relay<{ agentId: string; token: string; handle: string; role: Seat["role"] }>(
-        `/v1/lobbies/${lobby.lobbyId}/people`, { person }, await this.accountToken(),
-      );
-      this.addSeat(PERSON, { lobbyId: lobby.lobbyId, lobbyName: lobby.name, agentId: res.agentId, handle: res.handle, role: res.role, token: res.token }, keys.secretKey);
+      // Each account has one seat per lobby. If another of your machines has it, leave it there;
+      // it moves here when you use the lobby on this machine.
+      if (lobby.roster.some((a) => a.client === "cli" && a.owner?.login === account.login)) continue;
+      await this.addPersonSeat(lobby.lobbyId, lobby.name);
       added = true;
     }
     if (added) this.emit("activity", { type: "lobbies" });
+  }
+
+  /** Puts you in a lobby from this machine. The relay keeps one person per account, so this takes over your seat from any other machine. */
+  private async addPersonSeat(lobbyId: string, lobbyName: string | null): Promise<Seat> {
+    const account = this.requireAccount();
+    const keys = await generateSeatKeys();
+    const person = { handle: personHandle(account.login), client: "cli" as const, owns: [], workingOn: "", publicKey: toB64u(keys.publicKey) };
+    const res = await this.relay<{ agentId: string; token: string; handle: string; role: Seat["role"] }>(
+      `/v1/lobbies/${lobbyId}/people`, { person }, await this.accountToken(),
+    );
+    return this.addSeat(PERSON, { lobbyId, lobbyName, agentId: res.agentId, handle: res.handle, role: res.role, token: res.token }, keys.secretKey);
   }
 
   /**
@@ -1283,6 +1313,8 @@ export class Daemon extends EventEmitter {
 }
 
 /** One person in a lobby, from the relay's membership list. */
+const SEAT_ROLE: Record<string, Seat["role"]> = { owner: "host", member: "member", viewer: "observer" };
+
 interface LobbyPerson {
   login: string;
   avatarUrl: string;

@@ -40,6 +40,19 @@ describe("people and their agents", () => {
     expect(owners).toMatchObject({ bob: "bob", "api-codex": "bob" });
   });
 
+  it("keeps one person per account: joining from a second machine takes over the seat and its name", async () => {
+    const lobby = await createLobby();
+    const laptop = await member(lobby, "carl");
+    const first = await addPerson(lobby.lobbyId, "carl", laptop);
+    const firstSocket = await TestSocket.open(first);
+    await firstSocket.hello();
+
+    const second = await addPerson(lobby.lobbyId, "carl", await signIn("carl"));
+    const carls = (await roster(lobby)).filter((a) => a.owner?.login === "carl");
+    expect(carls.map((a) => [a.handle, a.agentId])).toEqual([["carl", second.agentId]]);
+    expect(await firstSocket.closed()).toBe(4003);
+  });
+
   it("returns a shareable invite link, and refuses used-up or unknown invites", async () => {
     const lobby = await createLobby();
     const invite = await createInvite(lobby, { maxUses: 1 });

@@ -9,11 +9,11 @@ const relayUrl = inject("relayUrl");
 const running: Daemon[] = [];
 afterEach(async () => { for (const d of running.splice(0)) await d.stop(); });
 
-async function startDaemon(login = "tester") {
+async function startDaemon(login = "tester", githubToken = freshUser(login)) {
   const daemon = new Daemon({ home: mkdtempSync(join(tmpdir(), "al-home-")), relayUrl });
   await daemon.start();
   running.push(daemon);
-  await daemon.call("account.login", { githubToken: freshUser(login) });
+  await daemon.call("account.login", { githubToken });
   return daemon;
 }
 
@@ -88,13 +88,38 @@ describe("invites", () => {
     expect(await bob.call("invite.accept", { invite: url })).toMatchObject({ lobbyId, name: "food-app" });
     await bob.call("lobby.addAgent", { lobbyId, seatKey: api.seatKey, owns: ["api"] });
 
-    const players = await until(() => web.call("lobby.players"), (p: { handle: string }[]) => p.length === 4);
+    // Agents see each other and whose they are. People aren't listed: they aren't someone to ask.
+    const players = await until(() => web.call("lobby.players"), (p: { handle: string }[]) => p.length === 2);
     const owners = Object.fromEntries(players.map((p: { handle: string; owner?: { login: string } }) => [p.handle, p.owner?.login]));
-    expect(owners).toEqual({ alice: "alice", "web-claude": "alice", bob: "bob", "api-codex": "bob" });
+    expect(owners).toEqual({ "web-claude": "alice", "api-codex": "bob" });
+    await expect(web.call("message.send", { to: "bob", type: "question", body: "are you there?" })).rejects.toThrow("no agent named 'bob'");
   });
 });
 
 
+
+describe("one account on two machines", () => {
+  it("is one person in the lobby, on whichever machine used it last", async () => {
+    const dana = freshUser("dana");
+    const laptop = await startDaemon("dana", dana);
+    const web = await agentSession(laptop, "claude-code", "web");
+    const { lobbyId } = await laptop.call("lobby.create", { name: "food-app" });
+    await laptop.call("lobby.addAgent", { lobbyId, seatKey: web.seatKey });
+
+    // A second machine signs in to the same account: it doesn't add a second "dana".
+    const desktop = await startDaemon("dana", dana);
+    const people = async () => (await laptop.call("dashboard.lobbies", {}))[0].roster.filter((a: { client: string }) => a.client === "cli");
+    expect((await people()).map((a: { handle: string }) => a.handle)).toEqual(["dana"]);
+
+    // Using the lobby on the desktop moves her seat there, still as one "dana", and the laptop leaves it there.
+    const api = await agentSession(desktop, "codex", "api");
+    await desktop.call("lobby.addAgent", { lobbyId, seatKey: api.seatKey });
+    const players = await until(() => web.call("lobby.players"), (p: { handle: string }[]) => p.length === 2);
+    expect(players.map((p: { handle: string }) => p.handle).sort()).toEqual(["api-codex", "web-claude"]);
+    await new Promise((r) => setTimeout(r, 1_000));
+    expect((await people()).map((a: { handle: string }) => a.handle)).toEqual(["dana"]);
+  });
+});
 
 describe("editing your agents", () => {
   it("accepts areas as typed, and tells the agent when it is renamed or given new areas", async () => {

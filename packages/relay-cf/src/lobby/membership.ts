@@ -34,6 +34,13 @@ export function getAgent(sql: SqlStorage, agentId: string): AgentRow | undefined
   return sql.exec<AgentRow>("SELECT * FROM agents WHERE agent_id = ?", agentId).toArray()[0];
 }
 
+/** A person's seat in the lobby: each GitHub account has at most one. */
+export function personOf(sql: SqlStorage, userId: string): string | undefined {
+  return sql.exec<{ agent_id: string }>(
+    "SELECT agent_id FROM agents WHERE owner_id = ? AND client = 'cli' AND left_at IS NULL AND kicked_at IS NULL", userId,
+  ).toArray()[0]?.agent_id;
+}
+
 export function isActive(agent: AgentRow | undefined): agent is AgentRow {
   return agent !== undefined && agent.left_at === null && agent.kicked_at === null;
 }

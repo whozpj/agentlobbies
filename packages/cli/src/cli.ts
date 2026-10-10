@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { CLIENT_VERSION, DaemonError, openSession, relayUrl } from "@agentlobbies/daemon/client";
+import { CLIENT_VERSION, DaemonError, RpcClient, defaultHome, openSession, relayUrl, socketPath } from "@agentlobbies/daemon/client";
 import { runStdioServer } from "@agentlobbies/mcp-server";
 import { defineCommand, runMain } from "citty";
 import { spawn } from "node:child_process";
@@ -214,10 +214,19 @@ const install = defineCommand({
 
 const uninstall = defineCommand({
   meta: { description: "Remove Agent Lobbies from your coding agents" },
-  run: () => {
+  run: async () => {
     for (const client of detectClients(homedir())) {
       client.uninstall(homedir());
       console.log(`${pc.green("✓")} ${client.name}: removed`);
+    }
+    // Nothing uses the background daemon now: stop it rather than leave it running, signed in.
+    try {
+      const daemon = await RpcClient.connect(socketPath(defaultHome()));
+      await daemon.call("daemon.shutdown");
+      daemon.close();
+      console.log(`${pc.green("✓")} Stopped the background daemon`);
+    } catch {
+      // It wasn't running.
     }
   },
 });

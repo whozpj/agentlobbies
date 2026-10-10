@@ -88,7 +88,8 @@ describe("daemon against the real relay", () => {
   it("shows connected peers as online and waiting, not the stale status from their joined event", async () => {
     const { api } = await lobbyWithTwoAgents();
     const players = await eventually(() => api.call("lobby.players"), (p) => p.every((a: { status: string }) => a.status === "idle"));
-    expect(players.map((a: { status: string }) => a.status)).toEqual(["idle", "idle", "idle"]);
+    // Two agents: the person who made the lobby isn't in the list agents see.
+    expect(players.map((a: { status: string }) => a.status)).toEqual(["idle", "idle"]);
   });
 
   it("refreshes an invalid or expired token by itself and reconnects (C6)", async () => {

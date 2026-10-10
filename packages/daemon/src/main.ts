@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, unlinkSync } from "node:fs";
+import { existsSync, statSync, unlinkSync } from "node:fs";
 import type { Socket } from "node:net";
 import { fileURLToPath } from "node:url";
 import { Daemon } from "./daemon";
@@ -50,3 +50,20 @@ async function shutdown() {
 daemon.on("shutdown", shutdown);
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
+
+// A daemon nobody can reach must not keep running, signed in, in the background. Exit if the socket
+// is no longer ours (the home folder was deleted, or another daemon took over) or the package was removed.
+if (process.platform !== "win32") {
+  const ownSocket = statSync(path).ino;
+  const script = fileURLToPath(import.meta.url);
+  const stillOurs = () => {
+    try {
+      return statSync(path).ino === ownSocket && existsSync(script);
+    } catch {
+      return false;
+    }
+  };
+  setInterval(() => {
+    if (!stillOurs()) void shutdown();
+  }, Number(process.env.AGENTLOBBIES_ORPHAN_CHECK_MS ?? 30_000)).unref();
+}
