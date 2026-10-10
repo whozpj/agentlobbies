@@ -79,6 +79,7 @@ export class LobbyDurableObject extends DurableObject<Env> {
 
   async summary(): Promise<{ roster: AgentProfile[]; keyEpoch: number }> {
     if (!lobbyExists(this.ctx.storage.sql)) return { roster: [], keyEpoch: 0 };
+    this.closeStaleSockets(); // someone is looking at this lobby: don't show them a laptop that went to sleep as online
     return { roster: roster(this.ctx.storage), keyEpoch: currentEpoch(this.ctx.storage.sql) };
   }
 
@@ -189,7 +190,8 @@ export class LobbyDurableObject extends DurableObject<Env> {
 
   /**
    * Closes sockets whose heartbeats stopped (a laptop that slept, a dropped network), so peers see
-   * them go offline. Runs on lobby activity rather than on a timer, so idle lobbies cost nothing.
+   * them go offline. Runs on lobby activity and while someone is looking at the lobby, rather than
+   * on a timer, so idle lobbies cost nothing.
    */
   closeStaleSockets(now = Date.now()): void {
     for (const ws of this.ctx.getWebSockets()) {
@@ -251,7 +253,9 @@ export class LobbyDurableObject extends DurableObject<Env> {
 
   async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
     const att = ws.deserializeAttachment() as SocketAttachment | null;
-    if (!att || att.watcher) return; // refused sockets have no attachment; watchers only listen
+    if (!att) return; // a refused socket
+    // Watchers only listen. An open lobby page says so now and then, which is when we check who went quiet.
+    if (att.watcher) return this.closeStaleSockets();
     if (!lobbyExists(this.ctx.storage.sql)) return ws.close(4010, "lobby deleted"); // a frame that crossed the deletion
     if (typeof raw !== "string" || new TextEncoder().encode(raw).length > LIMITS.maxFrameBytes) {
       return ws.close(4000, "bad frame");

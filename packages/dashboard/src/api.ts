@@ -284,7 +284,7 @@ const relay = {
 };
 
 /** A WebSocket that reconnects after a drop and keeps itself alive with heartbeats. */
-function liveSocket(path: string, onFrame: (frame: { t: string; [key: string]: unknown }) => void): () => void {
+function liveSocket(path: string, onFrame: (frame: { t: string; [key: string]: unknown }) => void, watching = false): () => void {
   let socket: WebSocket | undefined;
   let closed = false;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
@@ -299,7 +299,12 @@ function liveSocket(path: string, onFrame: (frame: { t: string; [key: string]: u
       }
     };
     socket.onopen = () => {
-      heartbeat = setInterval(() => socket?.send('{"t":"ping"}'), 20_000);
+      heartbeat = setInterval(() => {
+        socket?.send('{"t":"ping"}');
+        // Pings are answered without waking the lobby. This one is noticed: it has the relay check for
+        // agents that went quiet (a laptop that slept), so the page doesn't keep showing them online.
+        if (watching) socket?.send('{"t":"watching"}');
+      }, 20_000);
     };
     socket.onclose = () => {
       clearInterval(heartbeat);
@@ -328,7 +333,7 @@ function subscribe(onActivity: (activity: Activity) => void, lobbyId?: string): 
         void readMessage(lobbyId, frame.message as SealedMessage).then((message) => onActivity({ type: "message", lobbyId, message }));
       }
       if (frame.t === "roster" || frame.t === "event") onActivity({ type: "roster", lobbyId });
-    });
+    }, true);
   }
   return liveSocket("/v1/me/live", (frame) => {
     if (frame.t === "machines") onActivity({ type: "agents" });
