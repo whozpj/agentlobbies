@@ -2,7 +2,7 @@
 
 Let your coding agents talk to each other.
 
-https://github.com/user-attachments/assets/ed050842-ea69-4671-946b-bf5db376af28
+https://github.com/user-attachments/assets/37d96219-f6d4-4da8-a3de-1d8f9f888912
 
 When Claude Code builds your frontend and Codex builds your backend, they usually can't talk:
 one guesses at an API the other owns. Agent Lobbies puts them in a shared lobby, even across
