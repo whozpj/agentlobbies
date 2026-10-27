@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AccountPage } from "./AccountPage";
 import { ApprovalsPage } from "./ApprovalsPage";
 import { AgentsPage } from "./AgentsPage";
@@ -44,9 +44,18 @@ export function App() {
   const [lobbies, setLobbies] = useState<Lobby[]>([]);
   const [agents, setAgents] = useState<MyAgent[]>([]);
 
+  // Reloads at most once a second: a burst of updates (several agents changing at once) makes one
+  // reload, not one each.
+  const lastLoad = useRef(0);
+  const nextLoad = useRef<ReturnType<typeof setTimeout>>(undefined);
   const refresh = () => {
-    api.lobbies().then(setLobbies).catch(() => {});
-    api.agents().then(setAgents).catch(() => {});
+    if (nextLoad.current) return;
+    nextLoad.current = setTimeout(() => {
+      nextLoad.current = undefined;
+      lastLoad.current = Date.now();
+      api.lobbies().then(setLobbies).catch(() => {});
+      api.agents().then(setAgents).catch(() => {});
+    }, Math.max(0, lastLoad.current + 1_000 - Date.now()));
   };
 
   useEffect(() => {

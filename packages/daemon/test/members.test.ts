@@ -98,6 +98,36 @@ describe("invites", () => {
 
 
 
+describe("waiting hooks", () => {
+  it("wait quietly for an agent that isn't in a lobby: no polling, no change announcements, one wait per agent", async () => {
+    const daemon = await startDaemon("erin");
+    const web = await agentSession(daemon, "claude-code", "web");
+    let announced = 0;
+    daemon.on("activity", (a: { type: string }) => { if (a.type === "agents") announced++; });
+
+    // Every Claude Code turn starts a hook that waits; here two turns' hooks, for an agent in no lobby.
+    const hook = async () => {
+      const { sessionId } = await daemon.call("session.open", { client: "claude-code", cwd: web.cwd, passive: true });
+      try {
+        return await daemon.call("inbox.wait", { sessionId, timeoutMs: 30_000 });
+      } finally {
+        await daemon.call("session.close", { sessionId });
+      }
+    };
+    const older = hook();
+    await new Promise((r) => setTimeout(r, 200));
+    const newer = hook();
+    expect(await older).toEqual({ cancelled: true });
+
+    // The user adds the agent: the waiting hook wakes at once.
+    const { lobbyId } = await daemon.call("lobby.create", { name: "food-app" });
+    announced = 0;
+    await daemon.call("lobby.addAgent", { lobbyId, seatKey: web.seatKey });
+    expect(await newer).toEqual({ unread: 1 });
+    expect(announced).toBe(1); // the add itself; hooks coming and going announce nothing
+  });
+});
+
 describe("signing out", () => {
   it("takes this machine's agents out of their lobbies, so nobody still sees them online", async () => {
     const alice = await startDaemon("alice");

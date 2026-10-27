@@ -110,6 +110,7 @@ export class Daemon extends EventEmitter {
   private readonly waiters = new Map<string, (frame: OkOrErr) => void>();
   private readonly rejectedTokens = new Set<string>();
   private readonly pendingAcks = new Map<string, { seq: number; count: number; timer: NodeJS.Timeout; conn: Connection }>();
+  /** Each agent's (seat key's) wait for its next unread message. */
   private readonly inboxWaiters = new Map<string, (result: { unread: number } | { cancelled: true }) => void>();
 
   private dashboard: Dashboard | undefined;
@@ -255,7 +256,8 @@ export class Daemon extends EventEmitter {
           this.connections.delete(seat.seat_id);
         }
       }
-      this.emit("activity", { type: "agents" });
+      // A hook coming and going changes nothing anyone sees.
+      if (!session?.passive) this.emit("activity", { type: "agents" });
       return {};
     },
 
@@ -410,10 +412,7 @@ export class Daemon extends EventEmitter {
       this.db.setSecure(seatKey, p.secure === true);
       if (p.secure === true) {
         // Stop any wait that would wake the agent.
-        for (const seat of this.db.seatsFor(seatKey)) {
-          const waiter = this.inboxWaiters.get(seat.seat_id);
-          if (waiter) waiter({ cancelled: true });
-        }
+        this.inboxWaiters.get(seatKey)?.({ cancelled: true });
       }
       this.emit("activity", { type: "agents" });
       return {};
@@ -499,23 +498,27 @@ export class Daemon extends EventEmitter {
       return events.map((e) => this.dashboardMessage(view, e));
     },
 
-    // One waiter per seat: a newer wait (the next idle period) replaces the older one.
+    /**
+     * Waits for this agent's next unread message. One waiter per agent: a newer wait (its next idle
+     * period) replaces the older one. An agent that isn't in a lobby yet waits too, and is woken when
+     * its user adds it, rather than asking again and again.
+     */
     "inbox.wait": async (p) => {
+      const { seatKey } = this.session(p);
       // Secure mode: peer messages never wake the agent; it sees them when its user next talks to it.
-      if (this.isSecure(this.session(p).seatKey)) return { unread: 0, secure: true };
-      const seatId = this.seat(p).seat_id;
-      const unread = this.db.unreadCount(seatId);
+      if (this.isSecure(seatKey)) return { unread: 0, secure: true };
+      const seat = this.db.activeSeat(seatKey);
+      const unread = seat ? this.db.unreadCount(seat.seat_id) : 0;
       if (unread > 0) return { unread };
-      const older = this.inboxWaiters.get(seatId);
-      if (older) older({ cancelled: true });
+      this.inboxWaiters.get(seatKey)?.({ cancelled: true });
       return new Promise((resolve) => {
         const finish = (result: { unread: number } | { cancelled: true }) => {
           clearTimeout(timer);
-          if (this.inboxWaiters.get(seatId) === finish) this.inboxWaiters.delete(seatId);
+          if (this.inboxWaiters.get(seatKey) === finish) this.inboxWaiters.delete(seatKey);
           resolve(result);
         };
         const timer = setTimeout(() => finish({ unread: 0 }), Number(p.timeoutMs ?? 60_000));
-        this.inboxWaiters.set(seatId, finish);
+        this.inboxWaiters.set(seatKey, finish);
       });
     },
 
@@ -832,10 +835,11 @@ export class Daemon extends EventEmitter {
   /** Tells whoever waits on this seat's inbox (the Stop hook, an MCP server) how many messages are unread. */
   private wakeWaiter(seatId: string): void {
     const unread = this.db.unreadCount(seatId);
-    const waiter = this.inboxWaiters.get(seatId);
-    if (waiter) waiter({ unread });
     const seat = this.db.seat(seatId);
-    if (seat) this.codexListeners.get(seat.seat_key)?.wake();
+    if (seat) {
+      this.inboxWaiters.get(seat.seat_key)?.({ unread });
+      this.codexListeners.get(seat.seat_key)?.wake();
+    }
     this.emit("notify", { method: "inbox.new", params: { seatId, unread } });
   }
 
