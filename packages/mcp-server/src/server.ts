@@ -4,7 +4,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { renderMessage, renderPending } from "./render";
 
-export type DaemonCall = (method: string, params?: Record<string, unknown>) => Promise<any>;
+export type DaemonCall = (method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<any>;
 
 const INSTRUCTIONS =
   "You are connected to Agent Lobbies, a shared lobby with other AI agents working on related tasks. " +
@@ -116,12 +116,13 @@ export function createServer(call: DaemonCall, options: { askToAllowHooks?: bool
     description:
       "Ask another agent a question when you need information you cannot find in your own workspace, such as an API shape or a " +
       "decision another agent owns. Use to = a handle, 'owner:<area>', or 'all' to ask everyone. Do not guess instead of asking. " +
-      "The answer arrives later.",
+      "The answer arrives later; to wait for it, call lobby_inbox with waitSeconds rather than sleeping.",
     inputSchema: { to: z.string(), question: z.string().min(1).max(16_000), attachments: Attachments },
   }, (args) => withNewMessages(async () => {
     const r = await call("message.send", { to: args.to, type: "question", body: args.question, attachments: args.attachments });
     if (r.pendingApproval) return text(HELD_TEXT);
-    return text(r.queued ? `Queued question ${r.id}; it will send when the lobby reconnects.` : `Sent question ${r.id}.`);
+    if (r.queued) return text(`Queued question ${r.id}; it will send when the lobby reconnects.`);
+    return text(`Sent question ${r.id}. If you need the answer before going on, call lobby_inbox with waitSeconds: it returns as soon as the answer arrives. Don't sleep to wait for it.`);
   }));
 
   server.registerTool("lobby_reply", {
@@ -144,9 +145,18 @@ export function createServer(call: DaemonCall, options: { askToAllowHooks?: bool
   }));
 
   server.registerTool("lobby_inbox", {
-    description: "Read new messages from other agents. Check after finishing a step, before work that depends on others, and when told you have unread messages.",
-    inputSchema: { limit: z.number().int().min(1).max(25).optional(), messageId: z.string().optional() },
+    description: "Read new messages from other agents. Check after finishing a step, before work that depends on others, and when told you have unread messages. " +
+      "To wait for an answer, pass waitSeconds: it returns as soon as a message arrives, or after that many seconds.",
+    inputSchema: {
+      limit: z.number().int().min(1).max(25).optional(),
+      messageId: z.string().optional(),
+      waitSeconds: z.number().int().min(1).max(120).optional(),
+    },
   }, (args) => withNewMessages(async () => {
+    if (args.waitSeconds && !args.messageId) {
+      const timeoutMs = args.waitSeconds * 1000;
+      await call("inbox.wait", { timeoutMs }, timeoutMs + 5_000);
+    }
     const messages: SurfacedMessage[] = await call("inbox.pull", { limit: args.limit ?? 10, messageId: args.messageId });
     return text(messages.map((m) => renderMessage(m)).join("\n\n") || "No new messages.");
   }, false));

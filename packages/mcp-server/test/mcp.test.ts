@@ -101,6 +101,28 @@ describe("MCP server", () => {
     expect(inbox.text).toContain("from api-codex");
   });
 
+  it("waits for an answer with lobby_inbox, returning as soon as it arrives", async () => {
+    const daemon = await startDaemon();
+    const web = await agent(daemon, "claude-code");
+    const api = await agent(daemon, "codex");
+    const { lobbyId } = await daemon.call("lobby.create", { name: "food-app" });
+    await web.addTo(lobbyId, "web-claude", ["web"]);
+    await api.addTo(lobbyId, "api-codex", ["api"]);
+    await web.tool("lobby_inbox");
+    await eventually(() => api.tool("lobby_players"), "web-claude");
+
+    const asked = await web.tool("lobby_ask", { to: "owner:api", question: "What field holds the ETA?" });
+    expect(asked.text).toContain("call lobby_inbox with waitSeconds");
+    const messageId = (await eventually(() => api.tool("lobby_inbox"), "What field holds the ETA?")).text.match(/id (\w{26})/)![1];
+
+    const started = Date.now();
+    const waiting = web.tool("lobby_inbox", { waitSeconds: 60 });
+    await new Promise((r) => setTimeout(r, 500));
+    await api.tool("lobby_reply", { messageId, answer: "estimatedArrival, ISO 8601" });
+    expect((await waiting).text).toContain("estimatedArrival");
+    expect(Date.now() - started).toBeLessThan(10_000);
+  });
+
   it("truncates long piggybacked bodies and points to lobby_inbox (G32)", async () => {
     const daemon = await startDaemon();
     const web = await agent(daemon, "claude-code");

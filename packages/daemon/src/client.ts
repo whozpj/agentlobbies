@@ -77,7 +77,7 @@ export async function connectToDaemon(home = defaultHome()): Promise<RpcClient> 
 }
 
 export interface Session {
-  call<T = any>(method: string, params?: Record<string, unknown>): Promise<T>;
+  call<T = any>(method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<T>;
   close(): void;
 }
 
@@ -130,16 +130,16 @@ export async function openSession(opts: { client: string; cwd: string; home?: st
   await connect();
 
   return {
-    async call(method, params = {}) {
+    async call(method, params = {}, timeoutMs) {
       if (reconnecting) await reconnecting;
       try {
-        return await daemon.call(method, { sessionId, ...params });
+        return await daemon.call(method, { sessionId, ...params }, timeoutMs);
       } catch (e) {
         // The daemon restarted (an upgrade): reconnect and open a new session, then try once more.
         const lost = e instanceof DaemonError && (e.code === "daemon_unavailable" || e.code === "no_session");
         if (!lost) throw e;
         await reconnect();
-        return daemon.call(method, { sessionId, ...params });
+        return daemon.call(method, { sessionId, ...params }, timeoutMs);
       }
     },
     close: () => {
