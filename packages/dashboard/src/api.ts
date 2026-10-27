@@ -288,6 +288,9 @@ function liveSocket(path: string, onFrame: (frame: { t: string; [key: string]: u
   let socket: WebSocket | undefined;
   let closed = false;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
+  // Waits longer after each failed attempt (2 s, 4 s, … up to a minute), so a relay that's down
+  // isn't asked again every 2 seconds by every open tab.
+  let retryMs = 2_000;
 
   const connect = () => {
     socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${path}`);
@@ -299,6 +302,7 @@ function liveSocket(path: string, onFrame: (frame: { t: string; [key: string]: u
       }
     };
     socket.onopen = () => {
+      retryMs = 2_000;
       heartbeat = setInterval(() => {
         socket?.send('{"t":"ping"}');
         // Pings are answered without waking the lobby. This one is noticed: it has the relay check for
@@ -309,7 +313,9 @@ function liveSocket(path: string, onFrame: (frame: { t: string; [key: string]: u
     };
     socket.onclose = () => {
       clearInterval(heartbeat);
-      if (!closed) setTimeout(connect, 2_000);
+      if (closed) return;
+      setTimeout(connect, retryMs);
+      retryMs = Math.min(retryMs * 2, 60_000);
     };
   };
   connect();
