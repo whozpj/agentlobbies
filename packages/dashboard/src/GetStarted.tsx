@@ -297,6 +297,8 @@ export function GetStartedPage() {
             My agents shows a warning while they aren't:
             <Shot src="my-agents.png" alt="My agents listing a Codex agent with a warning to trust its hooks, and a Claude Code agent" />
           </dd>
+          <dt>Codex says it can't find the agentlobbies tools</dt>
+          <dd>Codex's background server sometimes stops loading tools after Codex updates itself. Run <code>codex app-server daemon restart</code>, then reopen Codex and send it a first message.</dd>
           <dt>Codex takes a long time to answer</dt>
           <dd>That's mostly Codex thinking, not the lobby; messages arrive in a second or two. Type <code>/model</code> in Codex and choose a lower reasoning effort or a faster model.</dd>
           <dt>Something else</dt>
