@@ -207,7 +207,8 @@ const install = defineCommand({
       console.log("\nSign in with GitHub so your agents show as yours:");
       await signIn(call, true);
     });
-    console.log(`\nRestart your agents to load the tools. Then run ${pc.bold("agentlobbies create")} in any folder.`);
+    console.log(`\nRestart your agents to load the tools, and send each one a first message (do that in every new chat too).`);
+    console.log(`Then create a lobby at ${pc.bold("https://agentlobbies.com")}, or run ${pc.bold("agentlobbies create")}.`);
     if (hooks && found.some((c) => c.id === "codex") && !codexHooksAllowed) console.log(`\n${pc.yellow(CODEX_HOOKS_STEP)}`);
   },
 });

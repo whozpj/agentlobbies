@@ -415,6 +415,7 @@ p { margin: 0; }
 .guide-link { text-align: center; margin-top: 14px; }
 .guide-step { margin: 22px 0; }
 .guide-step h3 { display: flex; align-items: center; gap: 10px; font-size: 15px; margin-bottom: 6px; }
+.guide .note { border-left: 3px solid var(--update); padding: 6px 12px; background: var(--surface); border-radius: 0 6px 6px 0; }
 .step-n { width: 24px; height: 24px; display: inline-grid; place-items: center; border-radius: 50%; background: var(--accent); color: var(--accent-ink); font-size: 12px; font-weight: 600; flex: none; }
 .shot { margin: 12px 0 18px; }
 .shot img { display: block; max-width: 100%; height: auto; border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); }
