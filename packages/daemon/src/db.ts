@@ -138,6 +138,8 @@ export interface Notice {
 
 export class Db {
   constructor(private readonly db: DatabaseSync) {
+    // During an upgrade the old daemon may still be closing this database; wait for it rather than fail.
+    db.exec("PRAGMA busy_timeout = 5000");
     db.exec("PRAGMA journal_mode = WAL");
     db.exec(SCHEMA);
     // Added in v0.4: a message this machine can't decrypt yet waits, unseen, until the key arrives.
