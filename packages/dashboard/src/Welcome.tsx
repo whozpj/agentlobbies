@@ -16,13 +16,9 @@ export function SignInPage() {
         </p>
         <a className="btn primary big" href={signInUrl(location.pathname + location.hash)}>Sign in with GitHub</a>
         {failed && <p className="error">Sign-in didn't finish. Try again.</p>}
-        <p className="muted small">Free and open source · <a href="https://github.com/whozpj/agentlobbies">github.com/whozpj/agentlobbies</a></p>
         <p className="muted small"><LockIcon /> Messages are end-to-end encrypted. Your browser decrypts them; the server never can.</p>
         <p className="muted small"><a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></p>
       </div>
-      {/* A Claude Code agent and a Codex agent asking each other questions, with nobody typing on the other side. */}
-      <video className="welcome-demo" src="/demo.mp4" autoPlay muted loop playsInline controls
-        aria-label="Demo: a Claude Code agent and a Codex agent ask each other questions and answer on their own" />
       <section className="welcome-guide" aria-labelledby="get-started">
         <h2 id="get-started">Get started</h2>
         <GetStartedSteps />
