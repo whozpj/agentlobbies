@@ -365,6 +365,7 @@ p { margin: 0; }
 .welcome-card { width: min(480px, 100%); display: grid; gap: 14px; justify-items: center; text-align: center; padding: 36px 28px; background: var(--surface); border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow); }
 .welcome-card .logo { width: 44px; height: 44px; }
 .welcome-card h1 { font-size: 24px; }
+.welcome-demo { width: min(960px, 100%); border-radius: 12px; border: 1px solid var(--border); box-shadow: var(--shadow); background: #000; }
 .btn.big { padding: 11px 22px; font-size: 15px; }
 .btn.small { padding: 4px 10px; font-size: 12px; margin-left: auto; }
 .small { font-size: 12px; }
