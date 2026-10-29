@@ -66,7 +66,9 @@ export function App() {
     if (me === undefined || (isHosted && me === null)) return;
     refresh();
     return api.subscribe((activity) => {
-      if (activity.type !== "message") refresh();
+      if (activity.type === "message") return;
+      if (activity.type === "agents" && activity.agents) return setAgents(activity.agents);
+      refresh();
     });
   }, [me]);
 

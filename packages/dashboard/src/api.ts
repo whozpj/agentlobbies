@@ -98,7 +98,7 @@ export type Activity =
   | { type: "message"; lobbyId: string; message: Message }
   | { type: "roster"; lobbyId: string }
   | { type: "connection"; lobbyId: string; state: string }
-  | { type: "agents" }
+  | { type: "agents"; agents?: MyAgent[] }
   | { type: "lobbies" };
 
 export const lobbyName = (l: Lobby) => l.name ?? l.lobbyId.slice(0, 8);
@@ -176,6 +176,10 @@ interface RelayMachine {
   agents: Omit<MyAgent, "cwd" | "machineId" | "machine">[];
 }
 
+function toMyAgents(machines: RelayMachine[]): MyAgent[] {
+  return machines.flatMap((m) => m.agents.map((a) => ({ ...a, cwd: "", online: m.online && a.online, machineId: m.machineId, machine: m.name })));
+}
+
 /** The relay's API, used by the hosted dashboard. Messages arrive without their (encrypted) content. */
 /** A message as the relay sends it: metadata, and the content still encrypted. */
 interface SealedMessage extends Omit<Message, "body"> {
@@ -242,8 +246,7 @@ const relay = {
     }));
   },
   async agents(): Promise<MyAgent[]> {
-    const machines = await request<RelayMachine[]>("/v1/me/agents");
-    return machines.flatMap((m) => m.agents.map((a) => ({ ...a, cwd: "", online: m.online && a.online, machineId: m.machineId, machine: m.name })));
+    return toMyAgents(await request<RelayMachine[]>("/v1/me/agents"));
   },
   async messages(lobbyId: string): Promise<Message[]> {
     const sealed = await request<SealedMessage[]>(`/v1/lobbies/${lobbyId}/events`);
@@ -343,7 +346,8 @@ function subscribe(onActivity: (activity: Activity) => void, lobbyId?: string): 
     }, true);
   }
   return liveSocket("/v1/me/live", (frame) => {
-    if (frame.t === "machines") onActivity({ type: "agents" });
+    // The update carries the new list, so there's nothing to fetch.
+    if (frame.t === "machines") onActivity({ type: "agents", agents: toMyAgents(frame.machines as RelayMachine[]) });
     if (frame.t === "lobbies") onActivity({ type: "lobbies" });
   });
 }
