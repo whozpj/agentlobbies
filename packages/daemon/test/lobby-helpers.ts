@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Daemon } from "../src/daemon";
@@ -31,4 +32,18 @@ export async function eventually<T>(fn: () => Promise<T>, ok: (v: T) => boolean,
     if (ok(v) || Date.now() > deadline) return v;
     await new Promise((r) => setTimeout(r, 100));
   }
+}
+
+/** Runs git in `cwd` as a throwaway test user. */
+export const git = (cwd: string, ...args: string[]) =>
+  execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd, stdio: "pipe" }).toString().trim();
+
+/** A git repo on `main` with one commit, in `dir` or a new temp folder. */
+export function makeRepo(dir = mkdtempSync(join(tmpdir(), "al-repo-"))): string {
+  mkdirSync(dir, { recursive: true });
+  git(dir, "init", "-q", "-b", "main");
+  writeFileSync(join(dir, "orders.ts"), "export const v = 1;\n");
+  git(dir, "add", "-A");
+  git(dir, "commit", "-q", "-m", "init");
+  return dir;
 }

@@ -27,7 +27,28 @@ export interface Binding {
 export interface Content {
   body: string;
   attachments?: { kind: string; name: string; content: string }[];
+  provenance?: unknown; // the sender's claim; checked before it's shown
 }
+
+export interface Provenance {
+  branch?: string;
+  commit?: string;
+  dirty: boolean;
+}
+
+/** The sender's checkout from decrypted content, or null if it's missing or malformed. Matches the daemon's check. */
+export function toProvenance(value: unknown): Provenance | null {
+  if (typeof value !== "object" || value === null) return null;
+  const { branch, commit, dirty } = value as Record<string, unknown>;
+  if (typeof dirty !== "boolean") return null;
+  if (branch !== undefined && (typeof branch !== "string" || !/^[^\s\x00-\x1f\x7f]{1,200}$/.test(branch))) return null;
+  if (commit !== undefined && (typeof commit !== "string" || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit))) return null;
+  const provenance: Provenance = { dirty };
+  if (branch !== undefined) provenance.branch = branch;
+  if (commit !== undefined) provenance.commit = commit;
+  return provenance;
+}
+
 
 /** This browser's device: its id on the relay and its private key, which can't be read out. */
 export interface Device {

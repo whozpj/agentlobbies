@@ -1,4 +1,4 @@
-import { canonical, fromB64u, toB64u, type Attachment, type Envelope, type Sealed } from "@agentlobbies/protocol";
+import { canonical, fromB64u, toB64u, type Attachment, type Envelope, type Provenance, type Sealed } from "@agentlobbies/protocol";
 import { Aes256Gcm, CipherSuite, DhkemX25519HkdfSha256, HkdfSha256 } from "@hpke/core";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 
@@ -17,6 +17,7 @@ export interface BoxKeys {
 export interface Content {
   body: string;
   attachments?: Attachment[];
+  provenance?: Provenance;
 }
 
 /** The envelope fields a ciphertext is bound to, so it can't be moved to another message. */

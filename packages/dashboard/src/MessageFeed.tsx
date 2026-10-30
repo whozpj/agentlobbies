@@ -1,10 +1,21 @@
-import { isHosted, type Message } from "./api";
+import { isHosted, type Message, type Provenance } from "./api";
 import { LockIcon } from "./ui";
 
 const TYPE_LABEL: Record<Message["type"], string> = { question: "Q", answer: "A", update: "update" };
 
 function latest(m: Message, replies: Map<string, Message[]>): number {
   return Math.max(m.committedAt, ...(replies.get(m.id) ?? []).map((r) => latest(r, replies)));
+}
+
+/** "main @ 1a2b3c4 · uncommitted changes", with the full commit on hover. */
+function Source({ provenance }: { provenance: Provenance }) {
+  const where = provenance.branch ?? "detached";
+  return (
+    <div className="msg-source" title={`Sender's git checkout when they sent this${provenance.commit ? `: ${provenance.commit}` : ""}`}>
+      {where}{provenance.commit ? ` @ ${provenance.commit.slice(0, 7)}` : " · no commits yet"}
+      {provenance.dirty && <span className="dirty"> · uncommitted changes</span>}
+    </div>
+  );
 }
 
 function Thread({ message, replies }: { message: Message; replies: Map<string, Message[]> }) {
@@ -19,6 +30,7 @@ function Thread({ message, replies }: { message: Message; replies: Map<string, M
           <span className="muted">→ {message.to}</span>
           <time className="muted">{new Date(message.committedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
         </div>
+        {message.provenance && <Source provenance={message.provenance} />}
         {message.body === null
           ? <p className="msg-body locked">
               <LockIcon /> {isHosted

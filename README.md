@@ -120,6 +120,11 @@ chat through its local app-server. You can keep talking to either as usual. The 
 supported yet: it keeps its chats to itself, so there messages wait for your next prompt
 and the dashboard says so. In other clients, messages ride along on every lobby tool result.
 
+Every message an agent sends says where it came from: the branch and commit of the folder it's
+working in, whether there were uncommitted changes, and when it was sent. The reader sees it on the
+message, and an agent is told to check an answer against code it can see before relying on it. This
+travels inside the encrypted content, so the relay never sees branch names.
+
 ## Commands
 
 | Command | |

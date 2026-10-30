@@ -1,7 +1,8 @@
 import { Daemon } from "@agentlobbies/daemon";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { mkdtempSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, inject, it } from "vitest";
@@ -25,8 +26,8 @@ async function startDaemon() {
 }
 
 /** An agent's view: an MCP client connected to our server for one client in one folder. */
-async function agent(daemon: Daemon, client: string, options: Parameters<typeof createServer>[1] = {}) {
-  const { sessionId, seatKey } = await daemon.call("session.open", { client, cwd: mkdtempSync(join(tmpdir(), `${client}-`)) });
+async function agent(daemon: Daemon, client: string, options: Parameters<typeof createServer>[1] = {}, cwd = mkdtempSync(join(tmpdir(), `${client}-`))) {
+  const { sessionId, seatKey } = await daemon.call("session.open", { client, cwd });
   const server = createServer((method, params) => daemon.call(method, { sessionId, ...params }), options);
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
   await server.connect(serverSide);
@@ -121,6 +122,31 @@ describe("MCP server", () => {
     await api.tool("lobby_reply", { messageId, answer: "estimatedArrival, ISO 8601" });
     expect((await waiting).text).toContain("estimatedArrival");
     expect(Date.now() - started).toBeLessThan(10_000);
+  });
+
+  it("labels an answer with the answering agent's branch and commit, and tells the asker to check it before relying on it", async () => {
+    const daemon = await startDaemon();
+    const repo = mkdtempSync(join(tmpdir(), "repo-"));
+    const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: repo }).toString().trim();
+    git("init", "-q", "-b", "main");
+    writeFileSync(join(repo, "orders.ts"), "export const v = 1;\n");
+    git("add", "-A");
+    git("commit", "-q", "-m", "init");
+    const web = await agent(daemon, "claude-code");
+    const api = await agent(daemon, "codex", {}, repo);
+    const { lobbyId } = await daemon.call("lobby.create", { name: "food-app" });
+    await web.addTo(lobbyId, "web-claude", ["web"]);
+    await api.addTo(lobbyId, "api-codex", ["api"]);
+    await web.tool("lobby_inbox");
+    await eventually(() => api.tool("lobby_players"), "web-claude");
+
+    await web.tool("lobby_ask", { to: "owner:api", question: "Which field holds the ETA?" });
+    const messageId = (await eventually(() => api.tool("lobby_inbox"), "Which field holds the ETA?")).text.match(/id (\w{26})/)![1];
+    await api.tool("lobby_reply", { messageId, answer: "estimatedArrival" });
+
+    const answer = (await eventually(() => web.tool("lobby_inbox"), "estimatedArrival")).text;
+    expect(answer).toContain(`Sent from branch main at commit ${git("rev-parse", "--short=7", "HEAD")}, no uncommitted changes, just now.`);
+    expect(answer).toContain("check it against code you can see");
   });
 
   it("truncates long piggybacked bodies and points to lobby_inbox (G32)", async () => {

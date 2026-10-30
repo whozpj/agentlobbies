@@ -1,4 +1,6 @@
-import { decryptContent, ensureDevice, forgetDevice, openLobbyKey, type Device as BrowserDevice, type Sealed } from "./crypto";
+import { decryptContent, ensureDevice, forgetDevice, openLobbyKey, toProvenance, type Device as BrowserDevice, type Provenance, type Sealed } from "./crypto";
+
+export type { Provenance } from "./crypto";
 
 export interface Agent {
   agentId: string;
@@ -59,6 +61,7 @@ export interface Message {
   body: string | null; // null: encrypted, and this dashboard can't read it
   inReplyTo: string | null;
   committedAt: number;
+  provenance?: Provenance | null; // the sender's git checkout when it wrote this
 }
 
 /** A new name and areas, as typed; the relay turns "Mobile App" into mobile-app. */
@@ -223,7 +226,7 @@ async function readMessage(lobbyId: string, m: SealedMessage): Promise<Message> 
     const key = await lobbyKey(lobbyId, sealed.epoch);
     if (!key) return { ...message, body: null };
     const content = await decryptContent(key, { lobbyId, id: m.id, from: fromAgentId, type: m.type, epoch: sealed.epoch }, sealed);
-    return { ...message, body: content.body };
+    return { ...message, body: content.body, provenance: toProvenance(content.provenance) };
   } catch {
     return { ...message, body: null };
   }

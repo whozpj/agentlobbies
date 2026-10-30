@@ -329,6 +329,8 @@ p { margin: 0; }
 .msg.update { border-left-color: var(--update); }
 .msg-meta { display: flex; align-items: center; gap: 6px; font-size: 12px; flex-wrap: wrap; }
 .msg-meta time { margin-left: auto; font: 11px var(--mono); }
+.msg-source { margin-top: 4px; color: var(--muted); font: 11px var(--mono); overflow-wrap: anywhere; }
+.msg-source .dirty { color: var(--update); }
 .msg-body { margin-top: 4px; white-space: pre-wrap; word-break: break-word; }
 .type { font: 600 10px var(--mono); text-transform: uppercase; padding: 1px 6px; border-radius: 4px; }
 .type.question { color: var(--question); background: color-mix(in srgb, var(--question) 15%, transparent); }

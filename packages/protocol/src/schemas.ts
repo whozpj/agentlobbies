@@ -73,6 +73,17 @@ export const Attachment = z.object({
   content: z.string(),
 });
 
+/**
+ * The sender's git checkout when it wrote a message, so a reader can judge how far to trust it.
+ * Sealed with the content, never in the envelope: branch names stay end-to-end encrypted.
+ */
+export const Provenance = z.object({
+  branch: z.string().regex(/^[^\s\x00-\x1f\x7f]{1,200}$/).optional(), // absent: a detached HEAD
+  commit: z.string().regex(/^[0-9a-f]{40}([0-9a-f]{24})?$/).optional(), // absent: no commits yet
+  dirty: z.boolean(),
+});
+export type Provenance = z.infer<typeof Provenance>;
+
 export const MessageType = z.enum(["question", "answer", "update"]);
 
 /** A body and attachments encrypted with the lobby key of `epoch` (LLD 15.5). */

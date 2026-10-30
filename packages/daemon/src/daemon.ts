@@ -1,5 +1,5 @@
 import {
-  LIMITS, refreshSigningBytes, signEnvelope, generateSeatKeys, toAreas, toB64u, toHandle, webCrypto,
+  Attachment, LIMITS, Provenance, refreshSigningBytes, signEnvelope, generateSeatKeys, toAreas, toB64u, toHandle, webCrypto,
   type AgentProfile, type Envelope, type LobbyEvent, type Recipient, type ServerFrame,
 } from "@agentlobbies/protocol";
 import { createHash, randomUUID } from "node:crypto";
@@ -11,7 +11,8 @@ import { ulid } from "ulid";
 import { Connection, type ConnectionState } from "./connection";
 import { startDashboard, type Dashboard } from "./dashboard";
 import { openDb, type Account, type Db, type Seat } from "./db";
-import { decryptContent, encryptContent, generateBoxKeys, newLobbyKey, openLobbyKey, sealLobbyKey, type BoxKeys } from "./encryption";
+import { decryptContent, encryptContent, generateBoxKeys, newLobbyKey, openLobbyKey, sealLobbyKey, type BoxKeys, type Content } from "./encryption";
+import { readProvenance } from "./git";
 import { findSecret } from "./guard";
 import { hasKey, loadKey, saveKey } from "./keys";
 import { DaemonError } from "./rpc";
@@ -53,7 +54,13 @@ export interface SurfacedMessage {
   body: string;
   inReplyTo?: string;
   attachments?: Envelope["attachments"];
+  /** When the sender wrote it, and the git checkout it wrote it from. */
+  sentAt?: number;
+  provenance?: Provenance;
 }
+
+/** A received envelope once its content is decrypted. */
+type OpenedEnvelope = Envelope & { provenance?: Provenance };
 
 /** An invite can be pasted as the whole link or just the token at its end. */
 function inviteToken(invite: string): string {
@@ -400,9 +407,12 @@ export class Daemon extends EventEmitter {
     // In secure mode an agent's message waits for its user's approval instead of going out.
     "message.send": async (p) => {
       const seat = this.seat(p);
-      const { seatKey } = this.session(p);
-      if (seatKey !== PERSON && this.isSecure(seatKey)) return this.holdForApproval(seat, p);
-      return this.sendMessage(seat, p);
+      const { seatKey, cwd } = this.session(p);
+      if (seatKey === PERSON) return this.sendMessage(seat, { ...p, provenance: undefined });
+      // Read now, before any approval, so the message says which checkout the agent wrote it from.
+      const withProvenance = { ...p, provenance: await readProvenance(cwd) };
+      if (this.isSecure(seatKey)) return this.holdForApproval(seat, withProvenance);
+      return this.sendMessage(seat, withProvenance);
     },
 
     /** Secure mode: every message the agent sends waits for approval, and peer messages don't wake it. */
@@ -564,7 +574,10 @@ export class Daemon extends EventEmitter {
     const lobbyKey = await this.waitForLobbyKey(seat.lobby_id);
     const id = ulid();
     const type = (p.type ?? "update") as Envelope["type"];
-    const content = attachments ? { body, attachments } : { body };
+    const content: Content = { body };
+    if (attachments) content.attachments = attachments;
+    const provenance = Provenance.safeParse(p.provenance);
+    if (provenance.success) content.provenance = provenance.data;
     const sealed = encryptContent(lobbyKey.key, { lobbyId: seat.lobby_id, id, from: seat.agent_id, type, epoch: lobbyKey.epoch }, content);
 
     const unsigned: Omit<Envelope, "sig"> = {
@@ -916,7 +929,9 @@ export class Daemon extends EventEmitter {
     }
 
     const e = sent.envelope;
-    const content = opened.attachments ? { body: opened.body ?? "", attachments: opened.attachments } : { body: opened.body ?? "" };
+    const content: Content = { body: opened.body ?? "" };
+    if (opened.attachments) content.attachments = opened.attachments;
+    if (opened.provenance) content.provenance = opened.provenance;
     const sealed = encryptContent(lobbyKey.key, { lobbyId: e.lobbyId, id: e.id, from: e.from, type: e.type, epoch: lobbyKey.epoch }, content);
     const unsigned: Omit<Envelope, "sig"> = { v: 2, id: e.id, lobbyId: e.lobbyId, from: e.from, to: e.to, type: e.type, threadDepth: e.threadDepth, sealed, createdAt: e.createdAt };
     if (e.inReplyTo) unsigned.inReplyTo = e.inReplyTo;
@@ -945,7 +960,7 @@ export class Daemon extends EventEmitter {
 
   private dashboardMessage(view: Seat, e: LobbyEvent) {
     if (e.kind !== "message") throw new Error("only messages");
-    const { envelope: env } = e;
+    const env: OpenedEnvelope = e.envelope;
     const handleOf = (agentId: string) => this.db.roster(view.seat_id).find((a) => a.agentId === agentId)?.handle ?? agentId;
     let to: string;
     if (env.to.kind === "broadcast") to = "all";
@@ -953,7 +968,7 @@ export class Daemon extends EventEmitter {
     else to = handleOf(env.to.agentId);
     return {
       id: env.id, seq: e.seq, from: handleOf(env.from), to, type: env.type, body: env.body ?? null,
-      inReplyTo: env.inReplyTo ?? null, committedAt: e.committedAt,
+      inReplyTo: env.inReplyTo ?? null, committedAt: e.committedAt, provenance: env.provenance ?? null,
     };
   }
 
@@ -964,7 +979,7 @@ export class Daemon extends EventEmitter {
 
   private surface(seat: Seat, e: LobbyEvent): SurfacedMessage {
     if (e.kind !== "message") throw new Error("only messages are surfaced");
-    const env = e.envelope;
+    const env: OpenedEnvelope = e.envelope;
     const message: SurfacedMessage = {
       id: env.id, seq: e.seq, from: env.from, fromAgentId: env.from, type: env.type, to: env.to, body: env.body ?? "",
     };
@@ -977,6 +992,8 @@ export class Daemon extends EventEmitter {
     }
     if (env.inReplyTo) message.inReplyTo = env.inReplyTo;
     if (env.attachments) message.attachments = env.attachments;
+    message.sentAt = env.createdAt;
+    if (env.provenance) message.provenance = env.provenance;
     return message;
   }
 
@@ -1205,16 +1222,28 @@ export class Daemon extends EventEmitter {
   }
 
   /** Decrypts an envelope with this machine's key for its epoch: "locked" if the key hasn't arrived, "broken" if it fails. */
-  private openEnvelope(lobbyId: string, envelope: Envelope): Envelope | "locked" | "broken" {
+  private openEnvelope(lobbyId: string, envelope: OpenedEnvelope): OpenedEnvelope | "locked" | "broken" {
     if (!envelope.sealed || envelope.body !== undefined) return envelope;
     const key = this.db.lobbyKey(lobbyId, envelope.sealed.epoch);
     if (!key) return "locked";
+    let content: Content;
     try {
       const binding = { lobbyId, id: envelope.id, from: envelope.from, type: envelope.type, epoch: envelope.sealed.epoch };
-      return { ...envelope, ...decryptContent(key, binding, envelope.sealed) };
+      content = decryptContent(key, binding, envelope.sealed);
     } catch {
       return "broken";
     }
+    // Take only the content's own fields: the sender, recipient, and type are signed on the envelope,
+    // and anything else in the sender's JSON must not override them.
+    const attachmentsOk = content.attachments === undefined
+      || (Array.isArray(content.attachments) && content.attachments.every((a) => Attachment.safeParse(a).success));
+    if (typeof content.body !== "string" || !attachmentsOk) return "broken";
+    const opened: OpenedEnvelope = { ...envelope, body: content.body };
+    if (content.attachments) opened.attachments = content.attachments;
+    // Provenance is the sender's claim; a malformed one is dropped, not the message.
+    const provenance = Provenance.safeParse(content.provenance);
+    if (provenance.success) opened.provenance = provenance.data;
+    return opened;
   }
 
   /** Messages that arrived before their key: decrypt them now and let waiting agents know. */
@@ -1273,7 +1302,7 @@ export class Daemon extends EventEmitter {
     if (!body.trim()) throw new DaemonError("bad_request", "message is empty");
     if (p.to !== undefined) this.resolveTo(seat, String(p.to)); // a wrong recipient fails now, not after approval
     const id = ulid();
-    const params: Params = { to: p.to, type: p.type ?? "update", body, inReplyTo: p.inReplyTo, attachments: p.attachments };
+    const params: Params = { to: p.to, type: p.type ?? "update", body, inReplyTo: p.inReplyTo, attachments: p.attachments, provenance: p.provenance };
     this.db.addPendingSend(id, seat.seat_id, params);
     this.emit("activity", { type: "agents" });
     return { id, pendingApproval: true };
